@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod dsl;
 pub mod event;
+pub mod instrument;
 pub mod intent;
 pub mod macro_engine;
 pub mod section;
