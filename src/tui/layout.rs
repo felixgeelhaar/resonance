@@ -8,10 +8,11 @@ pub enum FocusPanel {
     Grid,
     Macros,
     IntentConsole,
+    DiffPreview,
 }
 
 impl FocusPanel {
-    /// Cycle to the next panel.
+    /// Cycle to the next panel (DiffPreview is modal, not in cycle).
     pub fn next(self) -> Self {
         match self {
             Self::Editor => Self::Tracks,
@@ -19,6 +20,7 @@ impl FocusPanel {
             Self::Grid => Self::Macros,
             Self::Macros => Self::IntentConsole,
             Self::IntentConsole => Self::Editor,
+            Self::DiffPreview => Self::DiffPreview, // Modal — doesn't cycle
         }
     }
 }

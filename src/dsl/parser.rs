@@ -22,6 +22,7 @@ impl Parser {
         let mut tracks = Vec::new();
         let mut macros = Vec::new();
         let mut mappings = Vec::new();
+        let mut layers = Vec::new();
 
         self.skip_newlines();
 
@@ -43,6 +44,9 @@ impl Parser {
                 }
                 TokenKind::Map => {
                     mappings.push(self.parse_mapping()?);
+                }
+                TokenKind::Layer => {
+                    layers.push(self.parse_layer()?);
                 }
                 TokenKind::Ident(_) => {
                     // Functional chain syntax: name = ...
@@ -66,6 +70,7 @@ impl Parser {
             tracks,
             macros,
             mappings,
+            layers,
         })
     }
 
@@ -156,12 +161,17 @@ impl Parser {
         self.skip_newlines();
 
         let mut patterns = Vec::new();
+        let mut overrides = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
             self.skip_newlines();
             if self.check(TokenKind::RBrace) {
                 break;
             }
-            patterns.push(self.parse_pattern()?);
+            if self.check(TokenKind::Override) {
+                overrides.push(self.parse_override()?);
+            } else {
+                patterns.push(self.parse_pattern()?);
+            }
             self.skip_newlines();
         }
         self.expect(TokenKind::RBrace)?;
@@ -170,6 +180,122 @@ impl Parser {
             name,
             length_bars,
             patterns,
+            overrides,
+        })
+    }
+
+    /// Parse an override line: `override macro_name -> target_param (lo..hi) curve`
+    fn parse_override(&mut self) -> Result<MappingOverrideDef, CompileError> {
+        self.expect(TokenKind::Override)?;
+        let macro_name = self.expect_ident()?;
+        self.expect(TokenKind::Arrow)?;
+        let target_param = self.expect_ident()?;
+
+        let range = if self.check(TokenKind::LParen) {
+            self.advance();
+            let lo = self.expect_number()?;
+            self.expect(TokenKind::DotDot)?;
+            let hi = self.expect_number()?;
+            self.expect(TokenKind::RParen)?;
+            (lo, hi)
+        } else {
+            (0.0, 1.0)
+        };
+
+        let curve = if self.check_ident("linear") {
+            self.advance();
+            CurveKind::Linear
+        } else if self.check_ident("log") {
+            self.advance();
+            CurveKind::Log
+        } else if self.check_ident("exp") {
+            self.advance();
+            CurveKind::Exp
+        } else if self.check_ident("smoothstep") {
+            self.advance();
+            CurveKind::Smoothstep
+        } else {
+            CurveKind::Linear
+        };
+
+        Ok(MappingOverrideDef {
+            macro_name,
+            target_param,
+            range,
+            curve,
+        })
+    }
+
+    /// Parse a top-level layer block:
+    /// ```text
+    /// layer reverb_wash {
+    ///     depth -> reverb_mix (0.0..0.8) smoothstep
+    ///     depth -> delay_mix (0.0..0.4) linear
+    /// }
+    /// ```
+    fn parse_layer(&mut self) -> Result<LayerDef, CompileError> {
+        self.expect(TokenKind::Layer)?;
+        let name = self.expect_ident()?;
+        self.skip_newlines();
+        self.expect(TokenKind::LBrace)?;
+        self.skip_newlines();
+
+        let mut mappings = Vec::new();
+
+        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            self.skip_newlines();
+            if self.check(TokenKind::RBrace) {
+                break;
+            }
+
+            // Each line: macro_name -> target_param (lo..hi) curve
+            let macro_name = self.expect_ident()?;
+            self.expect(TokenKind::Arrow)?;
+            let target_param = self.expect_ident()?;
+
+            let range = if self.check(TokenKind::LParen) {
+                self.advance();
+                let lo = self.expect_number()?;
+                self.expect(TokenKind::DotDot)?;
+                let hi = self.expect_number()?;
+                self.expect(TokenKind::RParen)?;
+                (lo, hi)
+            } else {
+                (0.0, 1.0)
+            };
+
+            let curve = if self.check_ident("linear") {
+                self.advance();
+                CurveKind::Linear
+            } else if self.check_ident("log") {
+                self.advance();
+                CurveKind::Log
+            } else if self.check_ident("exp") {
+                self.advance();
+                CurveKind::Exp
+            } else if self.check_ident("smoothstep") {
+                self.advance();
+                CurveKind::Smoothstep
+            } else {
+                CurveKind::Linear
+            };
+
+            mappings.push(MappingDef {
+                macro_name,
+                target_param,
+                range,
+                curve,
+            });
+            self.skip_newlines();
+        }
+
+        self.expect(TokenKind::RBrace)?;
+        self.skip_newlines();
+
+        Ok(LayerDef {
+            name,
+            mappings,
+            enabled_by_default: false,
         })
     }
 
@@ -277,6 +403,7 @@ impl Parser {
                 name: "main".to_string(),
                 length_bars: 2,
                 patterns,
+                overrides: vec![],
             }]
         };
 
@@ -905,5 +1032,168 @@ track drums {
         let prog = parse(src).unwrap();
         assert!((prog.tempo - 128.0).abs() < f64::EPSILON);
         assert_eq!(prog.tracks.len(), 1);
+    }
+
+    #[test]
+    fn parse_section_with_override() {
+        let src = r#"
+track drums {
+  kit: default
+  section verse [4 bars] {
+    kick: [X . . . X . . .]
+    override filter -> cutoff (0.2..0.6) linear
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        let section = &prog.tracks[0].sections[0];
+        assert_eq!(section.overrides.len(), 1);
+        assert_eq!(section.overrides[0].macro_name, "filter");
+        assert_eq!(section.overrides[0].target_param, "cutoff");
+        assert_eq!(section.overrides[0].range, (0.2, 0.6));
+        assert_eq!(section.overrides[0].curve, CurveKind::Linear);
+    }
+
+    #[test]
+    fn parse_section_with_multiple_overrides() {
+        let src = r#"
+track drums {
+  kit: default
+  section verse [4 bars] {
+    kick: [X . . .]
+    override filter -> cutoff (0.2..0.6) linear
+    override depth -> reverb_mix (0.0..0.8) smoothstep
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        let section = &prog.tracks[0].sections[0];
+        assert_eq!(section.overrides.len(), 2);
+        assert_eq!(section.overrides[1].macro_name, "depth");
+        assert_eq!(section.overrides[1].curve, CurveKind::Smoothstep);
+    }
+
+    #[test]
+    fn parse_section_override_default_range_and_curve() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [2 bars] {
+    kick: [X . . .]
+    override filter -> cutoff
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        let ovr = &prog.tracks[0].sections[0].overrides[0];
+        assert_eq!(ovr.range, (0.0, 1.0));
+        assert_eq!(ovr.curve, CurveKind::Linear);
+    }
+
+    #[test]
+    fn parse_section_no_overrides_backward_compat() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [2 bars] {
+    kick: [X . . .]
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert!(prog.tracks[0].sections[0].overrides.is_empty());
+    }
+
+    #[test]
+    fn parse_override_with_exp_curve() {
+        let src = r#"
+track drums {
+  kit: default
+  section chorus [4 bars] {
+    kick: [X . . .]
+    override intensity -> drive (0.0..10.0) exp
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        let ovr = &prog.tracks[0].sections[0].overrides[0];
+        assert_eq!(ovr.macro_name, "intensity");
+        assert_eq!(ovr.target_param, "drive");
+        assert_eq!(ovr.range, (0.0, 10.0));
+        assert_eq!(ovr.curve, CurveKind::Exp);
+    }
+
+    #[test]
+    fn parse_layer_basic() {
+        let src = r#"
+layer reverb_wash {
+    depth -> reverb_mix (0.0..0.8) smoothstep
+    depth -> delay_mix (0.0..0.4) linear
+}
+track drums {
+  kit: default
+  section main [1 bars] {
+    kick: [X . . .]
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.layers.len(), 1);
+        assert_eq!(prog.layers[0].name, "reverb_wash");
+        assert_eq!(prog.layers[0].mappings.len(), 2);
+        assert!(!prog.layers[0].enabled_by_default);
+
+        assert_eq!(prog.layers[0].mappings[0].macro_name, "depth");
+        assert_eq!(prog.layers[0].mappings[0].target_param, "reverb_mix");
+        assert_eq!(prog.layers[0].mappings[0].range, (0.0, 0.8));
+        assert_eq!(prog.layers[0].mappings[0].curve, CurveKind::Smoothstep);
+
+        assert_eq!(prog.layers[0].mappings[1].target_param, "delay_mix");
+        assert_eq!(prog.layers[0].mappings[1].range, (0.0, 0.4));
+        assert_eq!(prog.layers[0].mappings[1].curve, CurveKind::Linear);
+    }
+
+    #[test]
+    fn parse_multiple_layers() {
+        let src = r#"
+layer reverb { depth -> mix (0.0..1.0) linear }
+layer delay { time -> feedback (0.0..0.9) exp }
+track drums {
+  kit: default
+  section main [1 bars] { kick: [X . . .] }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.layers.len(), 2);
+        assert_eq!(prog.layers[0].name, "reverb");
+        assert_eq!(prog.layers[1].name, "delay");
+    }
+
+    #[test]
+    fn parse_layer_default_range_and_curve() {
+        let src = r#"
+layer fx {
+    filter -> cutoff
+}
+track drums {
+  kit: default
+  section main [1 bars] { kick: [X . . .] }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.layers[0].mappings[0].range, (0.0, 1.0));
+        assert_eq!(prog.layers[0].mappings[0].curve, CurveKind::Linear);
+    }
+
+    #[test]
+    fn parse_no_layers_backward_compat() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [1 bars] { kick: [X . . .] }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert!(prog.layers.is_empty());
     }
 }

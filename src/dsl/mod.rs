@@ -2,6 +2,7 @@
 
 pub mod ast;
 pub mod compile;
+pub mod diff;
 pub mod error;
 pub mod lexer;
 pub mod note;

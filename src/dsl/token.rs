@@ -17,6 +17,8 @@ pub enum TokenKind {
     Section,
     Macro,
     Map,
+    Override,
+    Layer,
     Kit,
     Bass,
     Poly,

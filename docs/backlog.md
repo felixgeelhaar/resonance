@@ -166,3 +166,33 @@ Distributable instrument and sample packs. Pack format specification for communi
 Contribution guidelines, plugin registry, shared macro presets, community DSL snippets. Infrastructure for sharing and discovering user-created content. Review and quality assurance process for community submissions.
 
 ---
+
+## TUI Focus Routing Fix
+
+Fix critical focus routing bug: keyboard input always routes to the code editor regardless of which panel has focus. The keybinding system only checks is_edit_mode and diff_preview_visible but ignores app.focus (FocusPanel). When Tab switches focus to Tracks, Grid, Macros, or IntentConsole panels, all keypresses still insert characters in the editor. Fix: pass FocusPanel to map_key_with_diff(), guard EditorInsert actions by FocusPanel::Editor check, implement panel-specific key handlers for each panel. Add E2E tests verifying focus isolation.
+
+---
+
+## Audio Playback Integration
+
+Fix critical audio playback bug: pressing Space toggles is_playing flag but never advances current_beat, never spawns the audio thread, and never schedules events for playback. The run() loop polls input and draws frames but current_beat stays at Beat::ZERO forever. Fix: implement beat advancement in the event loop based on elapsed wall-clock time and BPM, integrate with EventScheduler to drive event playback, update status.position_bars/position_beats from current_beat each frame, connect compiled events to the audio engine. Add E2E tests verifying beat advancement and status display updates during playback.
+
+---
+
+## Grid Visualization Integration
+
+Fix grid visualization: draw_grid() renders placeholder text "(grid visualization)" instead of actual event data. The grid.rs module has complete, tested infrastructure (project_events(), GridCell, TrackGrid) but it is never called from draw_grid(). Fix: call project_events() with compiled events, render TrackGrid cells as styled text (X for hits, note names for notes, cursor highlight for playback position), show track names on left. Store compiled events in App for grid rendering. Add E2E tests verifying grid renders actual pattern data from compiled DSL.
+
+---
+
+## TUI Help System &amp; Onboarding
+
+Add help system and improve beginner-friendliness. Currently only 5 of 20+ keybindings shown in the status bar, no help modal, no interactive onboarding. Fix: create help.rs with HelpScreen modal overlay (triggered by ? key), showing all keybindings organized by mode (Global, Edit, Perform, Diff Preview). Expand status bar hints to show context-sensitive tips based on current focus and mode. Improve first-run experience with getting-started tips. Add E2E tests verifying help modal display, keybinding listing completeness, and context-sensitive hints.
+
+---
+
+## TUI E2E &amp; UI Test Suite
+
+Comprehensive end-to-end and UI test suite for all TUI functionality. Tests cover: focus routing isolation (keys only affect focused panel), playback state transitions (play/pause updates beat and status), grid rendering accuracy (compiled events projected correctly), help modal lifecycle (show/hide/scroll), keybinding completeness (all documented bindings work), mode transitions (Edit/Perform), panel cycling (Tab traversal), compile-on-edit (Ctrl-R triggers recompile with visual feedback). Uses headless terminal backend for automated testing without requiring a real terminal.
+
+---

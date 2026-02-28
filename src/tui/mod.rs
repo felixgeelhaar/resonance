@@ -2,27 +2,33 @@
 //!
 //! The App struct holds all TUI state and drives the event loop.
 
+pub mod diff_preview;
 pub mod editor;
 pub mod first_run;
 pub mod grid;
+pub mod help;
 pub mod intent_console;
 pub mod keybindings;
+pub mod layers;
 pub mod layout;
 pub mod macros;
 pub mod status;
 pub mod tracks;
 
+pub use diff_preview::DiffPreview;
 pub use editor::Editor;
 pub use grid::{project_events, GridCell, TrackGrid};
+pub use help::HelpScreen;
 pub use intent_console::IntentConsole;
 pub use keybindings::{map_key, Action};
+pub use layers::LayerPanel;
 pub use layout::{AppMode, FocusPanel};
 pub use macros::MacroPanel;
 pub use status::{CompileStatus, StatusInfo};
 pub use tracks::TrackList;
 
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event as CrosstermEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -32,10 +38,11 @@ use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::dsl::Compiler;
+use crate::event::types::ParamId;
 use crate::event::Beat;
 use crate::intent::{IntentProcessor, PerformanceIntent};
-use crate::macro_engine::MacroEngine;
-use crate::section::SectionController;
+use crate::macro_engine::{MacroEngine, Mapping};
+use crate::section::{Section, SectionController};
 
 /// The main TUI application state.
 pub struct App {
@@ -44,14 +51,19 @@ pub struct App {
     pub focus: FocusPanel,
     pub track_list: TrackList,
     pub macro_panel: MacroPanel,
+    pub layer_panel: LayerPanel,
+    pub diff_preview: DiffPreview,
+    pub help_screen: HelpScreen,
     pub intent_console: IntentConsole,
     pub status: StatusInfo,
     pub macro_engine: MacroEngine,
     pub intent_processor: IntentProcessor,
     pub section_controller: SectionController,
+    pub compiled_events: Vec<crate::event::types::Event>,
     pub should_quit: bool,
     pub is_playing: bool,
-    current_beat: Beat,
+    pub current_beat: Beat,
+    last_tick: Option<Instant>,
 }
 
 impl App {
@@ -63,14 +75,19 @@ impl App {
             focus: FocusPanel::Editor,
             track_list: TrackList::default(),
             macro_panel: MacroPanel::default(),
+            layer_panel: LayerPanel::default(),
+            diff_preview: DiffPreview::default(),
+            help_screen: HelpScreen::default(),
             intent_console: IntentConsole::new(50),
             status: StatusInfo::default(),
             macro_engine: MacroEngine::new(),
             intent_processor: IntentProcessor::new(1),
             section_controller: SectionController::default(),
+            compiled_events: Vec::new(),
             should_quit: false,
             is_playing: false,
             current_beat: Beat::ZERO,
+            last_tick: None,
         }
     }
 
@@ -110,6 +127,35 @@ impl App {
                     );
                 }
             }
+            Action::ToggleLayer(idx) => {
+                if let Some(name) = self.layer_panel.name_at(idx).map(String::from) {
+                    if self.section_controller.toggle_layer(&name) {
+                        self.update_layer_panel();
+                        self.intent_console.log(
+                            format!("toggle layer {}", name),
+                            self.current_beat.as_beats_f64(),
+                        );
+                    }
+                }
+            }
+            Action::AcceptDiff => {
+                self.diff_preview.hide();
+                self.focus = FocusPanel::Editor;
+                self.intent_console
+                    .log("diff accepted", self.current_beat.as_beats_f64());
+            }
+            Action::RejectDiff => {
+                self.diff_preview.hide();
+                self.focus = FocusPanel::Editor;
+                self.intent_console
+                    .log("diff rejected", self.current_beat.as_beats_f64());
+            }
+            Action::DiffScrollUp => {
+                self.diff_preview.scroll_up();
+            }
+            Action::DiffScrollDown => {
+                self.diff_preview.scroll_down(20);
+            }
             Action::EditorInsert(c) => self.editor.insert_char(c),
             Action::EditorBackspace => self.editor.backspace(),
             Action::EditorDelete => self.editor.delete(),
@@ -120,7 +166,50 @@ impl App {
             Action::EditorNewline => self.editor.newline(),
             Action::EditorHome => self.editor.home(),
             Action::EditorEnd => self.editor.end(),
+            Action::ToggleHelp => {
+                self.help_screen.toggle();
+            }
+            Action::Escape => {
+                if self.help_screen.visible {
+                    self.help_screen.hide();
+                } else if self.focus != FocusPanel::Editor {
+                    self.focus = FocusPanel::Editor;
+                }
+            }
+            Action::PanelNavigate(_key_code) => {
+                // Panel-specific navigation — currently a no-op for content scrolling.
+                // Future: scroll track list, grid cursor, etc.
+            }
         }
+    }
+
+    /// Advance the current beat based on elapsed wall-clock time and BPM.
+    pub fn advance_beat(&mut self) {
+        if !self.is_playing {
+            self.last_tick = None;
+            return;
+        }
+
+        let now = Instant::now();
+        if let Some(last) = self.last_tick {
+            let elapsed = now.duration_since(last);
+            let beats_per_second = self.status.bpm / 60.0;
+            let ticks_per_second = beats_per_second * 960.0; // 960 PPQN
+            let delta_ticks = (ticks_per_second * elapsed.as_secs_f64()).round() as u64;
+            if delta_ticks > 0 {
+                self.current_beat = Beat::from_ticks(self.current_beat.ticks() + delta_ticks);
+                // Update status display
+                let total_beats = self.current_beat.as_beats_f64();
+                self.status.position_bars = (total_beats / 4.0).floor() as u64;
+                self.status.position_beats = (total_beats % 4.0).floor() as u64;
+            }
+        }
+        self.last_tick = Some(now);
+    }
+
+    /// Set the last tick time (for testing beat advancement).
+    pub fn set_last_tick(&mut self, instant: Instant) {
+        self.last_tick = Some(instant);
     }
 
     /// Compile the editor content and update state.
@@ -143,6 +232,50 @@ impl App {
                     .collect();
                 self.track_list = TrackList::from_defs(&track_defs);
 
+                // Populate SectionController from compiled sections
+                let sections: Vec<Section> = song
+                    .sections
+                    .iter()
+                    .map(|cs| Section {
+                        name: cs.name.clone(),
+                        length_in_bars: cs.length_in_bars,
+                        mapping_overrides: cs
+                            .mapping_overrides
+                            .iter()
+                            .map(|o| Mapping {
+                                macro_name: o.macro_name.clone(),
+                                target_param: ParamId(o.target_param.clone()),
+                                range: o.range,
+                                curve: o.curve,
+                            })
+                            .collect(),
+                    })
+                    .collect();
+                self.section_controller = SectionController::new(sections);
+
+                // Populate layers from compiled song
+                for layer_def in &song.layers {
+                    let layer = crate::section::Layer {
+                        name: layer_def.name.clone(),
+                        mapping_additions: layer_def
+                            .mappings
+                            .iter()
+                            .map(|m| Mapping {
+                                macro_name: m.macro_name.clone(),
+                                target_param: ParamId(m.target_param.clone()),
+                                range: m.range,
+                                curve: m.curve,
+                            })
+                            .collect(),
+                        enabled: layer_def.enabled_by_default,
+                    };
+                    self.section_controller.add_layer(layer);
+                }
+                self.update_layer_panel();
+
+                // Store compiled events for grid visualization
+                self.compiled_events = song.events.clone();
+
                 self.intent_console
                     .log("compiled OK", self.current_beat.as_beats_f64());
             }
@@ -154,6 +287,21 @@ impl App {
                 );
             }
         }
+    }
+
+    /// Update the layer panel from the section controller's layers.
+    fn update_layer_panel(&mut self) {
+        // We need to get layer states from the section controller.
+        // The active_mappings method gives us active layers, but we need names + enabled state.
+        // For now we track via the layer_panel itself — populated during compile.
+        // After toggle, we re-read states.
+        let layer_states: Vec<(String, bool)> = self
+            .section_controller
+            .layer_states()
+            .iter()
+            .map(|(n, e)| (n.clone(), *e))
+            .collect();
+        self.layer_panel.update(&layer_states);
     }
 
     /// Draw the UI.
@@ -194,6 +342,16 @@ impl App {
 
         // Status bar
         self.draw_status(frame, chunks[3]);
+
+        // Diff preview overlay (rendered last, on top)
+        if self.diff_preview.visible {
+            self.draw_diff_preview(frame, size);
+        }
+
+        // Help overlay (rendered on top of everything)
+        if self.help_screen.visible {
+            self.draw_help(frame, size);
+        }
     }
 
     fn draw_editor(&self, frame: &mut Frame, area: Rect) {
@@ -292,7 +450,49 @@ impl App {
             .borders(Borders::ALL)
             .border_style(border_style);
 
-        let paragraph = Paragraph::new("(grid visualization)").block(block);
+        if self.compiled_events.is_empty() {
+            let paragraph = Paragraph::new("(no events — compile with Ctrl-R)").block(block);
+            frame.render_widget(paragraph, area);
+            return;
+        }
+
+        let cursor = if self.is_playing {
+            Some(self.current_beat)
+        } else {
+            None
+        };
+        let grids = grid::project_events(&self.compiled_events, 2, 8, cursor);
+
+        let lines: Vec<Line> = grids
+            .iter()
+            .map(|tg| {
+                let mut spans = vec![Span::styled(
+                    format!("{:>8} ", tg.track_name),
+                    Style::default().fg(Color::Yellow),
+                )];
+                for cell in &tg.cells {
+                    let (text, color) = match cell {
+                        GridCell::Empty => (".", Color::DarkGray),
+                        GridCell::Hit(v) => {
+                            if *v > 0.6 {
+                                ("X", Color::White)
+                            } else {
+                                ("x", Color::Gray)
+                            }
+                        }
+                        GridCell::Note(n) => {
+                            let _ = n; // note number available for future display
+                            ("N", Color::Cyan)
+                        }
+                        GridCell::Cursor => ("|", Color::Green),
+                    };
+                    spans.push(Span::styled(format!("{text} "), Style::default().fg(color)));
+                }
+                Line::from(spans)
+            })
+            .collect();
+
+        let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(paragraph, area);
     }
 
@@ -359,6 +559,98 @@ impl App {
         frame.render_widget(list, area);
     }
 
+    fn draw_diff_preview(&self, frame: &mut Frame, area: Rect) {
+        use crate::tui::diff_preview::DiffLineKind;
+
+        // Centered overlay: 60% width, 60% height
+        let width = (area.width * 60 / 100).max(40);
+        let height = (area.height * 60 / 100).max(10);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let overlay = Rect::new(x, y, width, height);
+
+        // Clear the background
+        let clear = Block::default()
+            .style(Style::default().bg(Color::Black))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(" Diff Preview ");
+        let inner = clear.inner(overlay);
+        frame.render_widget(clear, overlay);
+
+        // Render visible lines
+        let max_lines = inner.height as usize;
+        let visible = self.diff_preview.visible_lines(max_lines);
+        let lines: Vec<Line> = visible
+            .iter()
+            .map(|dl| {
+                let color = match dl.kind {
+                    DiffLineKind::Header => Color::Yellow,
+                    DiffLineKind::Addition => Color::Green,
+                    DiffLineKind::Removal => Color::Red,
+                    DiffLineKind::Modification => Color::Cyan,
+                    DiffLineKind::Context => Color::DarkGray,
+                };
+                Line::from(Span::styled(&dl.text, Style::default().fg(color)))
+            })
+            .collect();
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, inner);
+    }
+
+    fn draw_help(&self, frame: &mut Frame, area: Rect) {
+        let width = (area.width * 70 / 100).max(50);
+        let height = (area.height * 70 / 100).max(15);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let overlay = Rect::new(x, y, width, height);
+
+        let block = Block::default()
+            .style(Style::default().bg(Color::Black))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Help — Press ? or Esc to close ");
+        let inner = block.inner(overlay);
+        frame.render_widget(block, overlay);
+
+        let lines: Vec<Line> = self
+            .help_screen
+            .lines()
+            .iter()
+            .skip(self.help_screen.scroll_offset)
+            .take(inner.height as usize)
+            .map(|hl| {
+                let color = if hl.is_header {
+                    Color::Yellow
+                } else {
+                    Color::White
+                };
+                Line::from(Span::styled(&hl.text, Style::default().fg(color)))
+            })
+            .collect();
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, inner);
+    }
+
+    /// Context-sensitive hint for the status bar.
+    pub fn context_hint(&self) -> &str {
+        if self.help_screen.visible {
+            return "?/Esc:close help  Up/Down:scroll";
+        }
+        if self.diff_preview.visible {
+            return "Enter:accept  Esc:reject  Up/Down:scroll";
+        }
+        match self.mode {
+            AppMode::Edit => match self.focus {
+                FocusPanel::Editor => "Type to edit | Tab:focus Ctrl-R:compile Ctrl-P:mode ?:help",
+                _ => "Tab:focus  Esc:back to editor  Ctrl-R:compile  ?:help",
+            },
+            AppMode::Perform => "Space:play 1-9:section Shift+1-9:layer F1-F8:macro ?:help",
+        }
+    }
+
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
         let compile_indicator = match &self.status.compile_status {
             CompileStatus::Ok => Span::styled(" OK ", Style::default().fg(Color::Green)),
@@ -385,7 +677,7 @@ impl App {
             )),
             compile_indicator,
             Span::styled(
-                " Ctrl-Q:quit Tab:focus Ctrl-R:compile Ctrl-P:mode Space:play ",
+                format!(" {} ", self.context_hint()),
                 Style::default().fg(Color::DarkGray),
             ),
         ]);
@@ -408,12 +700,18 @@ impl App {
                 if let CrosstermEvent::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
                         let is_edit = self.mode == AppMode::Edit;
-                        if let Some(action) = map_key(key, is_edit) {
+                        let diff_visible = self.diff_preview.visible;
+                        if let Some(action) =
+                            keybindings::map_key_with_diff(key, is_edit, diff_visible, self.focus)
+                        {
                             self.handle_action(action);
                         }
                     }
                 }
             }
+
+            // Advance beat when playing
+            self.advance_beat();
 
             // Process pending intents
             let ready_intents = self.intent_processor.drain_ready(self.current_beat);
@@ -526,5 +824,201 @@ mod tests {
         let mut app = App::new(src);
         app.handle_action(Action::CompileReload);
         assert_eq!(app.macro_panel.len(), 1);
+    }
+
+    #[test]
+    fn diff_preview_accept_hides() {
+        let mut app = App::new("");
+        app.diff_preview.show(vec![diff_preview::DiffLine {
+            text: "test".to_string(),
+            kind: diff_preview::DiffLineKind::Context,
+        }]);
+        app.focus = FocusPanel::DiffPreview;
+        assert!(app.diff_preview.visible);
+
+        app.handle_action(Action::AcceptDiff);
+        assert!(!app.diff_preview.visible);
+        assert_eq!(app.focus, FocusPanel::Editor);
+    }
+
+    #[test]
+    fn diff_preview_reject_hides() {
+        let mut app = App::new("");
+        app.diff_preview.show(vec![diff_preview::DiffLine {
+            text: "test".to_string(),
+            kind: diff_preview::DiffLineKind::Context,
+        }]);
+        app.handle_action(Action::RejectDiff);
+        assert!(!app.diff_preview.visible);
+    }
+
+    #[test]
+    fn diff_scroll_actions() {
+        let mut app = App::new("");
+        let lines: Vec<diff_preview::DiffLine> = (0..30)
+            .map(|i| diff_preview::DiffLine {
+                text: format!("line {i}"),
+                kind: diff_preview::DiffLineKind::Context,
+            })
+            .collect();
+        app.diff_preview.show(lines);
+
+        app.handle_action(Action::DiffScrollDown);
+        assert_eq!(app.diff_preview.scroll_offset, 1);
+        app.handle_action(Action::DiffScrollUp);
+        assert_eq!(app.diff_preview.scroll_offset, 0);
+    }
+
+    #[test]
+    fn compile_populates_layers() {
+        let src = "layer fx {\n  filter -> cutoff (0.0..1.0) linear\n}\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+        assert_eq!(app.layer_panel.len(), 1);
+        assert_eq!(app.layer_panel.entries[0].name, "fx");
+        assert!(!app.layer_panel.entries[0].enabled);
+    }
+
+    #[test]
+    fn toggle_layer_action() {
+        let src = "layer fx {\n  filter -> cutoff (0.0..1.0) linear\n}\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+        assert!(!app.layer_panel.entries[0].enabled);
+
+        app.handle_action(Action::ToggleLayer(0));
+        assert!(app.layer_panel.entries[0].enabled);
+
+        app.handle_action(Action::ToggleLayer(0));
+        assert!(!app.layer_panel.entries[0].enabled);
+    }
+
+    #[test]
+    fn toggle_layer_out_of_range_no_panic() {
+        let mut app = App::new("");
+        // No layers — should not panic
+        app.handle_action(Action::ToggleLayer(5));
+    }
+
+    // --- Focus routing tests ---
+
+    #[test]
+    fn focus_routing_editor_only_when_focused() {
+        let mut app = App::new("");
+        app.mode = AppMode::Edit;
+
+        // Editor focused: insert works
+        app.focus = FocusPanel::Editor;
+        app.handle_action(Action::EditorInsert('x'));
+        assert_eq!(app.editor.content(), "x");
+
+        // Switch to Tracks: the keybinding mapper should not produce EditorInsert
+        // (this tests the mapper, not handle_action directly)
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+        let key = KeyEvent {
+            code: KeyCode::Char('y'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        };
+        let action = keybindings::map_key_with_diff(key, true, false, FocusPanel::Tracks);
+        assert_eq!(action, None); // 'y' should not produce any action when Tracks focused
+    }
+
+    #[test]
+    fn compile_populates_events_for_grid() {
+        let src = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+        assert!(!app.compiled_events.is_empty());
+    }
+
+    // --- Beat advancement tests ---
+
+    #[test]
+    fn beat_does_not_advance_when_stopped() {
+        let mut app = App::new("");
+        app.is_playing = false;
+        app.advance_beat();
+        assert_eq!(app.current_beat, Beat::ZERO);
+    }
+
+    #[test]
+    fn beat_advances_when_playing() {
+        let mut app = App::new("");
+        app.is_playing = true;
+        app.status.bpm = 120.0;
+
+        // First call initializes last_tick
+        app.advance_beat();
+        let first_beat = app.current_beat;
+
+        // Simulate time passing by setting last_tick in the past
+        app.last_tick = Some(Instant::now() - Duration::from_millis(500));
+        app.advance_beat();
+
+        // After 500ms at 120BPM, should have advanced ~1 beat
+        assert!(app.current_beat.ticks() > first_beat.ticks());
+    }
+
+    #[test]
+    fn status_updates_during_playback() {
+        let mut app = App::new("");
+        app.is_playing = true;
+        app.status.bpm = 120.0;
+
+        // Simulate 2.5 seconds of playback at 120 BPM = 5 beats
+        app.last_tick = Some(Instant::now() - Duration::from_millis(2500));
+        app.advance_beat();
+
+        assert!(app.status.position_bars > 0 || app.status.position_beats > 0);
+    }
+
+    // --- Help screen tests ---
+
+    #[test]
+    fn help_toggle_action() {
+        let mut app = App::new("");
+        assert!(!app.help_screen.visible);
+        app.handle_action(Action::ToggleHelp);
+        assert!(app.help_screen.visible);
+        app.handle_action(Action::ToggleHelp);
+        assert!(!app.help_screen.visible);
+    }
+
+    #[test]
+    fn escape_closes_help() {
+        let mut app = App::new("");
+        app.help_screen.show();
+        assert!(app.help_screen.visible);
+        app.handle_action(Action::Escape);
+        assert!(!app.help_screen.visible);
+    }
+
+    #[test]
+    fn escape_returns_focus_to_editor() {
+        let mut app = App::new("");
+        app.focus = FocusPanel::Tracks;
+        app.handle_action(Action::Escape);
+        assert_eq!(app.focus, FocusPanel::Editor);
+    }
+
+    #[test]
+    fn context_hint_changes_by_mode() {
+        let mut app = App::new("");
+        app.mode = AppMode::Edit;
+        app.focus = FocusPanel::Editor;
+        assert!(app.context_hint().contains("Type to edit"));
+
+        app.mode = AppMode::Perform;
+        assert!(app.context_hint().contains("Space:play"));
+    }
+
+    #[test]
+    fn context_hint_changes_by_focus() {
+        let mut app = App::new("");
+        app.mode = AppMode::Edit;
+        app.focus = FocusPanel::Tracks;
+        assert!(app.context_hint().contains("Esc:back to editor"));
     }
 }

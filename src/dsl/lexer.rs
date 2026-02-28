@@ -300,6 +300,8 @@ impl Lexer {
             "section" => TokenKind::Section,
             "macro" => TokenKind::Macro,
             "map" => TokenKind::Map,
+            "override" => TokenKind::Override,
+            "layer" => TokenKind::Layer,
             "kit" => TokenKind::Kit,
             "bass" => TokenKind::Bass,
             "poly" => TokenKind::Poly,

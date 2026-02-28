@@ -9,6 +9,7 @@ pub struct Program {
     pub tracks: Vec<TrackDef>,
     pub macros: Vec<MacroDef>,
     pub mappings: Vec<MappingDef>,
+    pub layers: Vec<LayerDef>,
 }
 
 /// A track definition with instrument and sections.
@@ -35,6 +36,16 @@ pub struct SectionDef {
     pub name: String,
     pub length_bars: u32,
     pub patterns: Vec<PatternDef>,
+    pub overrides: Vec<MappingOverrideDef>,
+}
+
+/// A per-section mapping override.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MappingOverrideDef {
+    pub macro_name: String,
+    pub target_param: String,
+    pub range: (f64, f64),
+    pub curve: CurveKind,
 }
 
 /// A pattern for a specific target (drum hit or note line).
@@ -68,6 +79,14 @@ pub struct MappingDef {
     pub target_param: String,
     pub range: (f64, f64),
     pub curve: CurveKind,
+}
+
+/// A layer definition with named mapping additions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerDef {
+    pub name: String,
+    pub mappings: Vec<MappingDef>,
+    pub enabled_by_default: bool,
 }
 
 /// Curve type for mappings.

@@ -39,7 +39,7 @@ impl Instrument for NoiseGen {
         }
 
         // Accept both Note and Sample("noise") triggers
-        let cutoff = match &event.trigger {
+        let base_cutoff = match &event.trigger {
             NoteOrSample::Note(n) => {
                 // Track note frequency for filter
                 super::oscillator::midi_to_freq(*n)
@@ -47,6 +47,13 @@ impl Instrument for NoiseGen {
             NoteOrSample::Sample(name) if name == "noise" => 2000.0,
             NoteOrSample::Sample(_) => return Vec::new(),
         };
+
+        // Read cutoff param, falling back to trigger-derived cutoff
+        let cutoff = event
+            .params
+            .get(&super::param_defs::cutoff())
+            .map(|v| v as f64)
+            .unwrap_or(base_cutoff);
 
         let duration_secs = event.duration.as_beats_f64() * 60.0 / ctx.bpm;
         let total_secs = self.envelope.total_duration(duration_secs);
@@ -152,5 +159,50 @@ mod tests {
     fn instrument_trait_name() {
         let gen = NoiseGen::new(42);
         assert_eq!(Instrument::name(&gen), "noise");
+    }
+
+    #[test]
+    fn reads_cutoff_param() {
+        let gen = NoiseGen::new(42);
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 60, 0.8);
+        event.params.set(super::super::param_defs::cutoff(), 200.0);
+        let filtered = gen.render(&event, &ctx());
+
+        let default_event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 60, 0.8);
+        let unfiltered = gen.render(&default_event, &ctx());
+
+        assert!(!filtered.is_empty());
+        assert_ne!(filtered, unfiltered);
+    }
+
+    #[test]
+    fn cutoff_param_overrides_note_tracking() {
+        let gen = NoiseGen::new(42);
+        // Note C2 (MIDI 36) would give ~65 Hz cutoff, but param overrides to 5000 Hz
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        event.params.set(super::super::param_defs::cutoff(), 5000.0);
+        let high_cut = gen.render(&event, &ctx());
+
+        let default_event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        let low_cut = gen.render(&default_event, &ctx());
+
+        // Higher cutoff should have more high-frequency content (higher RMS)
+        let rms_high: f32 =
+            (high_cut.iter().map(|s| s * s).sum::<f32>() / high_cut.len() as f32).sqrt();
+        let rms_low: f32 =
+            (low_cut.iter().map(|s| s * s).sum::<f32>() / low_cut.len() as f32).sqrt();
+        assert!(
+            rms_high > rms_low,
+            "higher cutoff should pass more energy: {rms_high} vs {rms_low}"
+        );
+    }
+
+    #[test]
+    fn default_fallback_when_no_params() {
+        let gen = NoiseGen::new(42);
+        let event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 60, 0.8);
+        let out = gen.render(&event, &ctx());
+        assert!(!out.is_empty());
+        assert!(out.iter().any(|&s| s.abs() > 0.001));
     }
 }

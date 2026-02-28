@@ -5,6 +5,7 @@ pub mod drum_kit;
 pub mod envelope;
 pub mod noise_gen;
 pub mod oscillator;
+pub mod param_defs;
 pub mod pluck_synth;
 pub mod poly_synth;
 pub mod router;

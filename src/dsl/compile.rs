@@ -10,6 +10,14 @@ use super::ast::*;
 use super::error::CompileError;
 use super::note::parse_note_name;
 
+/// A compiled section with its mapping overrides.
+#[derive(Debug, Clone)]
+pub struct CompiledSection {
+    pub name: String,
+    pub length_in_bars: u32,
+    pub mapping_overrides: Vec<MappingOverrideDef>,
+}
+
 /// The result of compiling a DSL program.
 #[derive(Debug, Clone)]
 pub struct CompiledSong {
@@ -18,12 +26,15 @@ pub struct CompiledSong {
     pub track_defs: Vec<(TrackId, TrackDef)>,
     pub macros: Vec<MacroDef>,
     pub mappings: Vec<MappingDef>,
+    pub sections: Vec<CompiledSection>,
+    pub layers: Vec<LayerDef>,
 }
 
 /// Compile a Program AST into a CompiledSong.
 pub fn compile_program(program: &Program) -> Result<CompiledSong, CompileError> {
     let mut events = Vec::new();
     let mut track_defs = Vec::new();
+    let mut sections = Vec::new();
 
     for (idx, track) in program.tracks.iter().enumerate() {
         let track_id = TrackId(idx as u32);
@@ -36,6 +47,19 @@ pub fn compile_program(program: &Program) -> Result<CompiledSong, CompileError> 
         for section in &track.sections {
             let section_events = compile_section(section, track_id, is_drum, section_offset)?;
             events.extend(section_events);
+
+            // Collect compiled sections (deduplicate by name)
+            if !sections
+                .iter()
+                .any(|s: &CompiledSection| s.name == section.name)
+            {
+                sections.push(CompiledSection {
+                    name: section.name.clone(),
+                    length_in_bars: section.length_bars,
+                    mapping_overrides: section.overrides.clone(),
+                });
+            }
+
             section_offset = section_offset + Beat::from_bars(section.length_bars);
         }
     }
@@ -49,6 +73,8 @@ pub fn compile_program(program: &Program) -> Result<CompiledSong, CompileError> 
         track_defs,
         macros: program.macros.clone(),
         mappings: program.mappings.clone(),
+        sections,
+        layers: program.layers.clone(),
     })
 }
 
@@ -378,5 +404,125 @@ track drums {
         assert_eq!(song.events.len(), 2);
         assert!((song.events[0].velocity - 0.85).abs() < 0.01); // Hit
         assert!((song.events[1].velocity - 0.5).abs() < 0.01); // Ghost/Accent
+    }
+
+    #[test]
+    fn compile_sections_populated() {
+        let src = r#"
+track drums {
+  kit: default
+  section intro [2 bars] {
+    kick: [X . . . X . . .]
+  }
+  section main [4 bars] {
+    kick: [X . X . X . X .]
+  }
+}
+"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.sections.len(), 2);
+        assert_eq!(song.sections[0].name, "intro");
+        assert_eq!(song.sections[0].length_in_bars, 2);
+        assert_eq!(song.sections[1].name, "main");
+        assert_eq!(song.sections[1].length_in_bars, 4);
+    }
+
+    #[test]
+    fn compile_sections_deduplicate_by_name() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [1 bars] {
+    kick: [X . . .]
+  }
+}
+track bass {
+  bass
+  section main [1 bars] {
+    note: [C2 . . .]
+  }
+}
+"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Both tracks have "main" — should only appear once
+        assert_eq!(song.sections.len(), 1);
+        assert_eq!(song.sections[0].name, "main");
+    }
+
+    #[test]
+    fn compile_section_overrides() {
+        let src = r#"
+track drums {
+  kit: default
+  section verse [2 bars] {
+    kick: [X . . .]
+    override filter -> cutoff (0.2..0.6) linear
+  }
+}
+"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.sections.len(), 1);
+        assert_eq!(song.sections[0].name, "verse");
+        assert_eq!(song.sections[0].mapping_overrides.len(), 1);
+        let ovr = &song.sections[0].mapping_overrides[0];
+        assert_eq!(ovr.macro_name, "filter");
+        assert_eq!(ovr.target_param, "cutoff");
+        assert!((ovr.range.0 - 0.2).abs() < f64::EPSILON);
+        assert!((ovr.range.1 - 0.6).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn compile_section_no_overrides_backward_compat() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [1 bars] {
+    kick: [X . . .]
+  }
+}
+"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.sections.len(), 1);
+        assert!(song.sections[0].mapping_overrides.is_empty());
+    }
+
+    #[test]
+    fn compile_layers_populated() {
+        let src = r#"
+layer reverb_wash {
+    depth -> reverb_mix (0.0..0.8) smoothstep
+    depth -> delay_mix (0.0..0.4) linear
+}
+track drums {
+  kit: default
+  section main [1 bars] {
+    kick: [X . . .]
+  }
+}
+"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.layers.len(), 1);
+        assert_eq!(song.layers[0].name, "reverb_wash");
+        assert_eq!(song.layers[0].mappings.len(), 2);
+    }
+
+    #[test]
+    fn compile_no_layers_backward_compat() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [1 bars] {
+    kick: [X . . .]
+  }
+}
+"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert!(song.layers.is_empty());
     }
 }

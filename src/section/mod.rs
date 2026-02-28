@@ -156,6 +156,35 @@ impl SectionController {
         mappings
     }
 
+    /// Get all active mappings tagged with their source for conflict resolution.
+    pub fn active_mappings_sourced(&self) -> Vec<crate::macro_engine::resolver::SourcedMapping> {
+        use crate::macro_engine::resolver::{MappingSource, SourcedMapping};
+
+        let mut sourced = Vec::new();
+
+        if let Some(section) = self.sections.get(self.active_idx) {
+            for m in &section.mapping_overrides {
+                sourced.push(SourcedMapping {
+                    mapping: m.clone(),
+                    source: MappingSource::SectionOverride,
+                });
+            }
+        }
+
+        for (i, layer) in self.layers.iter().enumerate() {
+            if layer.enabled {
+                for m in &layer.mapping_additions {
+                    sourced.push(SourcedMapping {
+                        mapping: m.clone(),
+                        source: MappingSource::Layer(i),
+                    });
+                }
+            }
+        }
+
+        sourced
+    }
+
     /// Set the loop length in bars. Pass `None` to disable looping.
     pub fn set_loop_length(&mut self, bars: Option<u32>) {
         self.loop_length_bars = bars;
@@ -180,6 +209,14 @@ impl SectionController {
         } else {
             None
         }
+    }
+
+    /// Get all layer names and their enabled states.
+    pub fn layer_states(&self) -> Vec<(String, bool)> {
+        self.layers
+            .iter()
+            .map(|l| (l.name.clone(), l.enabled))
+            .collect()
     }
 
     /// Get a reference to the transition manager.

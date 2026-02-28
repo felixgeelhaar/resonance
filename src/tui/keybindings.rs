@@ -2,6 +2,8 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use super::layout::FocusPanel;
+
 /// Application-level actions triggered by key events.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -19,6 +21,16 @@ pub enum Action {
     JumpSection(usize),
     /// Adjust a macro by index and delta.
     AdjustMacro(usize, f64),
+    /// Toggle a layer by index (0-indexed).
+    ToggleLayer(usize),
+    /// Accept the current diff preview.
+    AcceptDiff,
+    /// Reject the current diff preview.
+    RejectDiff,
+    /// Scroll diff preview up.
+    DiffScrollUp,
+    /// Scroll diff preview down.
+    DiffScrollDown,
     /// Insert a character in the editor.
     EditorInsert(char),
     /// Delete character before cursor.
@@ -35,13 +47,43 @@ pub enum Action {
     /// Navigate to start/end of line.
     EditorHome,
     EditorEnd,
+    /// Toggle help overlay.
+    ToggleHelp,
+    /// Escape key (close overlays, return to editor focus).
+    Escape,
+    /// Navigate within a non-editor panel (arrow keys).
+    PanelNavigate(KeyCode),
 }
 
 /// Map a key event to an application action based on the current mode.
+/// Convenience wrapper that defaults to Editor focus and no diff preview.
 pub fn map_key(key: KeyEvent, is_edit_mode: bool) -> Option<Action> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    map_key_with_diff(key, is_edit_mode, false, FocusPanel::Editor)
+}
 
-    // Global bindings (both modes)
+/// Map a key event with diff preview and focus awareness.
+/// Editor actions only fire when `focus == FocusPanel::Editor`.
+pub fn map_key_with_diff(
+    key: KeyEvent,
+    is_edit_mode: bool,
+    diff_preview_visible: bool,
+    focus: FocusPanel,
+) -> Option<Action> {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // Diff preview mode intercepts most keys
+    if diff_preview_visible {
+        return match key.code {
+            KeyCode::Enter => Some(Action::AcceptDiff),
+            KeyCode::Esc => Some(Action::RejectDiff),
+            KeyCode::Up => Some(Action::DiffScrollUp),
+            KeyCode::Down => Some(Action::DiffScrollDown),
+            _ => None,
+        };
+    }
+
+    // Global bindings (both modes, all panels)
     if ctrl {
         return match key.code {
             KeyCode::Char('q') => Some(Action::Quit),
@@ -51,14 +93,20 @@ pub fn map_key(key: KeyEvent, is_edit_mode: bool) -> Option<Action> {
         };
     }
 
+    // Help toggle (? key) — available in all panels except editor in edit mode
+    if key.code == KeyCode::Char('?') && !(is_edit_mode && focus == FocusPanel::Editor) {
+        return Some(Action::ToggleHelp);
+    }
+
     match key.code {
         KeyCode::Tab => return Some(Action::CycleFocus),
         KeyCode::Char(' ') if !is_edit_mode => return Some(Action::TogglePlayback),
+        KeyCode::Esc if !diff_preview_visible => return Some(Action::Escape),
         _ => {}
     }
 
-    if is_edit_mode {
-        // Editor mode bindings
+    if is_edit_mode && focus == FocusPanel::Editor {
+        // Editor mode bindings — ONLY when editor panel has focus
         match key.code {
             KeyCode::Char(c) => Some(Action::EditorInsert(c)),
             KeyCode::Backspace => Some(Action::EditorBackspace),
@@ -72,8 +120,32 @@ pub fn map_key(key: KeyEvent, is_edit_mode: bool) -> Option<Action> {
             KeyCode::End => Some(Action::EditorEnd),
             _ => None,
         }
+    } else if is_edit_mode {
+        // Edit mode but non-editor panel: only navigation
+        match key.code {
+            KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+                Some(Action::PanelNavigate(key.code))
+            }
+            _ => None,
+        }
     } else {
-        // Perform mode bindings
+        // Perform mode bindings (available regardless of focus)
+        // Shift+1..9 toggles layers
+        if shift {
+            return match key.code {
+                KeyCode::Char('!') => Some(Action::ToggleLayer(0)),
+                KeyCode::Char('@') => Some(Action::ToggleLayer(1)),
+                KeyCode::Char('#') => Some(Action::ToggleLayer(2)),
+                KeyCode::Char('$') => Some(Action::ToggleLayer(3)),
+                KeyCode::Char('%') => Some(Action::ToggleLayer(4)),
+                KeyCode::Char('^') => Some(Action::ToggleLayer(5)),
+                KeyCode::Char('&') => Some(Action::ToggleLayer(6)),
+                KeyCode::Char('*') => Some(Action::ToggleLayer(7)),
+                KeyCode::Char('(') => Some(Action::ToggleLayer(8)),
+                _ => None,
+            };
+        }
+
         match key.code {
             KeyCode::Char('1') => Some(Action::JumpSection(0)),
             KeyCode::Char('2') => Some(Action::JumpSection(1)),
@@ -113,6 +185,15 @@ mod tests {
         }
     }
 
+    fn shift_key(c: char) -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char(c),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
+    }
+
     #[test]
     fn ctrl_q_quits() {
         assert_eq!(map_key(ctrl_key('q'), false), Some(Action::Quit));
@@ -144,7 +225,8 @@ mod tests {
     }
 
     #[test]
-    fn space_inserts_in_edit() {
+    fn space_inserts_in_edit_with_editor_focus() {
+        // map_key defaults to Editor focus
         assert_eq!(
             map_key(key(KeyCode::Char(' ')), true),
             Some(Action::EditorInsert(' '))
@@ -164,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn number_keys_insert_in_edit() {
+    fn number_keys_insert_in_edit_with_editor_focus() {
         assert_eq!(
             map_key(key(KeyCode::Char('1')), true),
             Some(Action::EditorInsert('1'))
@@ -184,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn editor_keys_in_edit_mode() {
+    fn editor_keys_in_edit_mode_with_editor_focus() {
         assert_eq!(
             map_key(key(KeyCode::Backspace), true),
             Some(Action::EditorBackspace)
@@ -199,5 +281,145 @@ mod tests {
     #[test]
     fn arrow_keys_no_action_in_perform() {
         assert_eq!(map_key(key(KeyCode::Left), false), None);
+    }
+
+    #[test]
+    fn diff_preview_enter_accepts() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Enter), false, true, FocusPanel::Editor),
+            Some(Action::AcceptDiff)
+        );
+    }
+
+    #[test]
+    fn diff_preview_esc_rejects() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Esc), false, true, FocusPanel::Editor),
+            Some(Action::RejectDiff)
+        );
+    }
+
+    #[test]
+    fn diff_preview_arrows_scroll() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Up), false, true, FocusPanel::Editor),
+            Some(Action::DiffScrollUp)
+        );
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Down), false, true, FocusPanel::Editor),
+            Some(Action::DiffScrollDown)
+        );
+    }
+
+    #[test]
+    fn diff_preview_blocks_other_keys() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Char('1')), false, true, FocusPanel::Editor),
+            None
+        );
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Tab), false, true, FocusPanel::Editor),
+            None
+        );
+    }
+
+    #[test]
+    fn shift_number_toggles_layer_in_perform() {
+        assert_eq!(
+            map_key_with_diff(shift_key('!'), false, false, FocusPanel::Editor),
+            Some(Action::ToggleLayer(0))
+        );
+        assert_eq!(
+            map_key_with_diff(shift_key('@'), false, false, FocusPanel::Editor),
+            Some(Action::ToggleLayer(1))
+        );
+        assert_eq!(
+            map_key_with_diff(shift_key('#'), false, false, FocusPanel::Editor),
+            Some(Action::ToggleLayer(2))
+        );
+    }
+
+    #[test]
+    fn shift_keys_insert_in_edit_with_editor_focus() {
+        assert_eq!(
+            map_key_with_diff(shift_key('!'), true, false, FocusPanel::Editor),
+            Some(Action::EditorInsert('!'))
+        );
+    }
+
+    // --- Focus isolation tests ---
+
+    #[test]
+    fn editor_keys_ignored_when_tracks_focused() {
+        // In edit mode, but Tracks panel has focus — typing should NOT go to editor
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Char('a')), true, false, FocusPanel::Tracks),
+            None
+        );
+    }
+
+    #[test]
+    fn editor_keys_ignored_when_grid_focused() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Char('x')), true, false, FocusPanel::Grid),
+            None
+        );
+    }
+
+    #[test]
+    fn arrow_keys_navigate_panel_when_not_editor_focused() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Up), true, false, FocusPanel::Tracks),
+            Some(Action::PanelNavigate(KeyCode::Up))
+        );
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Down), true, false, FocusPanel::Macros),
+            Some(Action::PanelNavigate(KeyCode::Down))
+        );
+    }
+
+    #[test]
+    fn global_bindings_work_from_any_panel() {
+        for panel in [
+            FocusPanel::Editor,
+            FocusPanel::Tracks,
+            FocusPanel::Grid,
+            FocusPanel::Macros,
+            FocusPanel::IntentConsole,
+        ] {
+            assert_eq!(
+                map_key_with_diff(ctrl_key('q'), false, false, panel),
+                Some(Action::Quit)
+            );
+            assert_eq!(
+                map_key_with_diff(key(KeyCode::Tab), true, false, panel),
+                Some(Action::CycleFocus)
+            );
+        }
+    }
+
+    #[test]
+    fn help_toggle_works_in_perform_mode() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Char('?')), false, false, FocusPanel::Editor),
+            Some(Action::ToggleHelp)
+        );
+    }
+
+    #[test]
+    fn help_toggle_not_in_editor_edit_mode() {
+        // When editing in editor, ? should insert the character
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Char('?')), true, false, FocusPanel::Editor),
+            Some(Action::EditorInsert('?'))
+        );
+    }
+
+    #[test]
+    fn help_toggle_works_from_non_editor_in_edit_mode() {
+        assert_eq!(
+            map_key_with_diff(key(KeyCode::Char('?')), true, false, FocusPanel::Tracks),
+            Some(Action::ToggleHelp)
+        );
     }
 }

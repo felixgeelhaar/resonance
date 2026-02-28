@@ -43,12 +43,36 @@ impl Instrument for PolySynth {
             return Vec::new();
         }
 
+        // Read params from event, falling back to defaults
+        let detune_cents = event
+            .params
+            .get(&super::param_defs::detune())
+            .map(|v| v as f64)
+            .unwrap_or(self.detune_cents);
+        let attack_time = event
+            .params
+            .get(&super::param_defs::attack())
+            .map(|v| v as f64)
+            .unwrap_or(self.envelope.attack);
+        let release_time = event
+            .params
+            .get(&super::param_defs::release())
+            .map(|v| v as f64)
+            .unwrap_or(self.envelope.release);
+
+        let envelope = AdsrEnvelope {
+            attack: attack_time,
+            decay: self.envelope.decay,
+            sustain: self.envelope.sustain,
+            release: release_time,
+        };
+
         let freq = midi_to_freq(midi_note);
-        let detune_ratio = 2.0f64.powf(self.detune_cents / 1200.0);
+        let detune_ratio = 2.0f64.powf(detune_cents / 1200.0);
         let freq2 = freq * detune_ratio;
 
         let duration_secs = event.duration.as_beats_f64() * 60.0 / ctx.bpm;
-        let total_secs = self.envelope.total_duration(duration_secs);
+        let total_secs = envelope.total_duration(duration_secs);
         let num_samples = (total_secs * ctx.sample_rate as f64) as usize;
 
         let mut phase1 = 0.0_f64;
@@ -58,7 +82,7 @@ impl Instrument for PolySynth {
 
         for i in 0..num_samples {
             let t = i as f64 / ctx.sample_rate as f64;
-            let env = self.envelope.amplitude(t, duration_secs);
+            let env = envelope.amplitude(t, duration_secs);
 
             let osc1 = oscillator(Waveform::Saw, phase1);
             let osc2 = oscillator(Waveform::Saw, phase2);
@@ -140,5 +164,64 @@ mod tests {
     fn instrument_trait_name() {
         let synth = PolySynth::new();
         assert_eq!(Instrument::name(&synth), "poly");
+    }
+
+    #[test]
+    fn reads_detune_param() {
+        let synth = PolySynth::new();
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(2), TrackId(0), 60, 0.7);
+        event.params.set(super::super::param_defs::detune(), 50.0);
+        let detuned = synth.render(&event, &ctx());
+
+        let default_event = Event::note(Beat::ZERO, Beat::from_beats(2), TrackId(0), 60, 0.7);
+        let normal = synth.render(&default_event, &ctx());
+
+        assert!(!detuned.is_empty());
+        assert_ne!(detuned, normal);
+    }
+
+    #[test]
+    fn reads_attack_param() {
+        let synth = PolySynth::new();
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(2), TrackId(0), 60, 0.7);
+        // Very short attack
+        event.params.set(super::super::param_defs::attack(), 0.001);
+        let fast_attack = synth.render(&event, &ctx());
+
+        let default_event = Event::note(Beat::ZERO, Beat::from_beats(2), TrackId(0), 60, 0.7);
+        let slow_attack = synth.render(&default_event, &ctx());
+
+        assert!(!fast_attack.is_empty());
+        // Fast attack should reach higher amplitude sooner
+        let early_fast: f32 = fast_attack[..100].iter().map(|s| s.abs()).sum::<f32>() / 100.0;
+        let early_slow: f32 = slow_attack[..100].iter().map(|s| s.abs()).sum::<f32>() / 100.0;
+        assert!(
+            early_fast > early_slow,
+            "fast attack should be louder early: {early_fast} vs {early_slow}"
+        );
+    }
+
+    #[test]
+    fn reads_release_param() {
+        let synth = PolySynth::new();
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 60, 0.7);
+        // Very long release
+        event.params.set(super::super::param_defs::release(), 2.0);
+        let long_release = synth.render(&event, &ctx());
+
+        let default_event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 60, 0.7);
+        let normal = synth.render(&default_event, &ctx());
+
+        // Longer release means more samples
+        assert!(long_release.len() > normal.len());
+    }
+
+    #[test]
+    fn default_fallback_when_no_params() {
+        let synth = PolySynth::new();
+        let event = Event::note(Beat::ZERO, Beat::from_beats(2), TrackId(0), 60, 0.7);
+        let out = synth.render(&event, &ctx());
+        assert!(!out.is_empty());
+        assert!(out.iter().any(|&s| s.abs() > 0.01));
     }
 }

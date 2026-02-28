@@ -45,8 +45,20 @@ impl Instrument for BassSynth {
             return Vec::new();
         }
 
+        // Read params from event, falling back to defaults
+        let filter_cutoff = event
+            .params
+            .get(&super::param_defs::cutoff())
+            .map(|v| v as f64)
+            .unwrap_or(self.filter_cutoff);
+        let detune_cents = event
+            .params
+            .get(&super::param_defs::detune())
+            .map(|v| v as f64)
+            .unwrap_or(self.detune_cents);
+
         let freq = midi_to_freq(midi_note);
-        let detune_ratio = 2.0f64.powf(self.detune_cents / 1200.0);
+        let detune_ratio = 2.0f64.powf(detune_cents / 1200.0);
         let freq2 = freq * detune_ratio;
 
         let duration_secs = event.duration.as_beats_f64() * 60.0 / ctx.bpm;
@@ -58,7 +70,7 @@ impl Instrument for BassSynth {
         let mut filter_state = 0.0_f64;
 
         // One-pole LP coefficient
-        let rc = 1.0 / (2.0 * std::f64::consts::PI * self.filter_cutoff);
+        let rc = 1.0 / (2.0 * std::f64::consts::PI * filter_cutoff);
         let dt = 1.0 / ctx.sample_rate as f64;
         let alpha = dt / (rc + dt);
 
@@ -157,5 +169,65 @@ mod tests {
     fn instrument_trait_name() {
         let synth = BassSynth::new();
         assert_eq!(Instrument::name(&synth), "bass");
+    }
+
+    #[test]
+    fn reads_cutoff_param() {
+        let synth = BassSynth::new();
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        // Set cutoff very low — should produce quieter/more filtered output
+        event.params.set(super::super::param_defs::cutoff(), 200.0);
+        let filtered = synth.render(&event, &ctx());
+
+        let default_event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        let unfiltered = synth.render(&default_event, &ctx());
+
+        // Both should produce output
+        assert!(!filtered.is_empty());
+        assert!(!unfiltered.is_empty());
+        // Lower cutoff should produce different output
+        assert_ne!(filtered, unfiltered);
+    }
+
+    #[test]
+    fn reads_detune_param() {
+        let synth = BassSynth::new();
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        event.params.set(super::super::param_defs::detune(), 50.0);
+        let detuned = synth.render(&event, &ctx());
+
+        let default_event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        let normal = synth.render(&default_event, &ctx());
+
+        assert!(!detuned.is_empty());
+        assert_ne!(detuned, normal);
+    }
+
+    #[test]
+    fn default_fallback_when_no_params() {
+        let synth = BassSynth::new();
+        let event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        let out = synth.render(&event, &ctx());
+        // Should still produce output with defaults
+        assert!(!out.is_empty());
+        assert!(out.iter().any(|&s| s.abs() > 0.01));
+    }
+
+    #[test]
+    fn cutoff_at_boundaries() {
+        let synth = BassSynth::new();
+        // Very high cutoff (essentially no filtering)
+        let mut event = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        event
+            .params
+            .set(super::super::param_defs::cutoff(), 20000.0);
+        let out = synth.render(&event, &ctx());
+        assert!(!out.is_empty());
+
+        // Very low cutoff
+        let mut event2 = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 36, 0.8);
+        event2.params.set(super::super::param_defs::cutoff(), 20.0);
+        let out2 = synth.render(&event2, &ctx());
+        assert!(!out2.is_empty());
     }
 }
