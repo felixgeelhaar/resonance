@@ -4,6 +4,7 @@
 //! through explicit mappings with configurable curves.
 
 pub mod curve;
+pub mod history;
 pub mod resolver;
 
 use std::collections::HashMap;

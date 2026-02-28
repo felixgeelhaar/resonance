@@ -19,8 +19,16 @@ pub enum Action {
     CycleFocus,
     /// Jump to a section by number (0-indexed).
     JumpSection(usize),
-    /// Adjust a macro by index and delta.
+    /// Adjust a macro by index and delta (default step).
     AdjustMacro(usize, f64),
+    /// Adjust a macro with fine step (0.01).
+    AdjustMacroFine(usize, f64),
+    /// Adjust a macro with coarse step (0.20).
+    AdjustMacroCoarse(usize, f64),
+    /// Undo macro change (perform mode).
+    MacroUndo,
+    /// Redo macro change (perform mode).
+    MacroRedo,
     /// Toggle a layer by index (0-indexed).
     ToggleLayer(usize),
     /// Accept the current diff preview.
@@ -49,6 +57,12 @@ pub enum Action {
     EditorEnd,
     /// Toggle help overlay.
     ToggleHelp,
+    /// Toggle crash log overlay.
+    ToggleCrashLog,
+    /// Zoom in the grid visualization.
+    GridZoomIn,
+    /// Zoom out the grid visualization.
+    GridZoomOut,
     /// Escape key (close overlays, return to editor focus).
     Escape,
     /// Navigate within a non-editor panel (arrow keys).
@@ -89,6 +103,9 @@ pub fn map_key_with_diff(
             KeyCode::Char('q') => Some(Action::Quit),
             KeyCode::Char('r') => Some(Action::CompileReload),
             KeyCode::Char('p') => Some(Action::ToggleMode),
+            KeyCode::Char('l') => Some(Action::ToggleCrashLog),
+            KeyCode::Char('z') if !is_edit_mode => Some(Action::MacroUndo),
+            KeyCode::Char('y') if !is_edit_mode => Some(Action::MacroRedo),
             _ => None,
         };
     }
@@ -130,7 +147,7 @@ pub fn map_key_with_diff(
         }
     } else {
         // Perform mode bindings (available regardless of focus)
-        // Shift+1..9 toggles layers
+        // Shift+1..9 toggles layers, Shift+F1..F8 fine macro adjust
         if shift {
             return match key.code {
                 KeyCode::Char('!') => Some(Action::ToggleLayer(0)),
@@ -142,6 +159,7 @@ pub fn map_key_with_diff(
                 KeyCode::Char('&') => Some(Action::ToggleLayer(6)),
                 KeyCode::Char('*') => Some(Action::ToggleLayer(7)),
                 KeyCode::Char('(') => Some(Action::ToggleLayer(8)),
+                KeyCode::F(n @ 1..=8) => Some(Action::AdjustMacroFine((n - 1) as usize, 0.01)),
                 _ => None,
             };
         }
@@ -157,6 +175,8 @@ pub fn map_key_with_diff(
             KeyCode::Char('8') => Some(Action::JumpSection(7)),
             KeyCode::Char('9') => Some(Action::JumpSection(8)),
             KeyCode::F(n @ 1..=8) => Some(Action::AdjustMacro((n - 1) as usize, 0.05)),
+            KeyCode::Char('+') | KeyCode::Char('=') => Some(Action::GridZoomIn),
+            KeyCode::Char('-') => Some(Action::GridZoomOut),
             _ => None,
         }
     }
@@ -404,6 +424,12 @@ mod tests {
             map_key_with_diff(key(KeyCode::Char('?')), false, false, FocusPanel::Editor),
             Some(Action::ToggleHelp)
         );
+    }
+
+    #[test]
+    fn ctrl_l_toggles_crash_log() {
+        assert_eq!(map_key(ctrl_key('l'), false), Some(Action::ToggleCrashLog));
+        assert_eq!(map_key(ctrl_key('l'), true), Some(Action::ToggleCrashLog));
     }
 
     #[test]

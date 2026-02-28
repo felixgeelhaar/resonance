@@ -17,6 +17,8 @@ hound = "3.5"
 rand = "0.8"
 rand_chacha = "0.3"
 dirs = "5"
+midir = "0.10"
+rosc = "0.11"
 
 [dev-dependencies]
 assert_approx_eq = "1.1"

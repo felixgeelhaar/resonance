@@ -81,6 +81,7 @@ impl HelpScreen {
         lines.push(l("  Tab          Cycle panel focus"));
         lines.push(l("  Esc          Close overlay / return to editor"));
         lines.push(l("  ?            Toggle this help screen"));
+        lines.push(l("  Ctrl-L       Toggle crash log"));
         lines.push(l(""));
 
         lines.push(h("EDIT MODE (editor panel focused)"));
@@ -97,6 +98,10 @@ impl HelpScreen {
         lines.push(l("  1-9          Jump to section"));
         lines.push(l("  Shift+1-9    Toggle layer"));
         lines.push(l("  F1-F8        Adjust macro (+5%)"));
+        lines.push(l("  Shift+F1-F8  Fine adjust macro (+1%)"));
+        lines.push(l("  Ctrl-Z       Undo macro change"));
+        lines.push(l("  Ctrl-Y       Redo macro change"));
+        lines.push(l("  +/-          Grid zoom in/out"));
         lines.push(l(""));
 
         lines.push(h("DIFF PREVIEW"));

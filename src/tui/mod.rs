@@ -2,8 +2,10 @@
 //!
 //! The App struct holds all TUI state and drives the event loop.
 
+pub mod crash_log;
 pub mod diff_preview;
 pub mod editor;
+pub mod external_input;
 pub mod first_run;
 pub mod grid;
 pub mod help;
@@ -15,9 +17,10 @@ pub mod macros;
 pub mod status;
 pub mod tracks;
 
+pub use crash_log::CrashLog;
 pub use diff_preview::DiffPreview;
 pub use editor::Editor;
-pub use grid::{project_events, GridCell, TrackGrid};
+pub use grid::{project_events, GridCell, GridZoom, TrackGrid};
 pub use help::HelpScreen;
 pub use intent_console::IntentConsole;
 pub use keybindings::{map_key, Action};
@@ -43,6 +46,7 @@ use crate::event::types::ParamId;
 use crate::event::{Beat, EventScheduler, RenderFn};
 use crate::instrument::{build_default_kit, InstrumentRouter};
 use crate::intent::{IntentProcessor, PerformanceIntent};
+use crate::macro_engine::history::MacroHistory;
 use crate::macro_engine::{MacroEngine, Mapping};
 use crate::section::{Section, SectionController};
 
@@ -65,6 +69,18 @@ pub struct App {
     pub should_quit: bool,
     pub is_playing: bool,
     pub current_beat: Beat,
+    pub crash_log: CrashLog,
+    pub crash_log_visible: bool,
+    pub macro_history: MacroHistory,
+    pub grid_zoom: GridZoom,
+    external_rx: external_input::ExternalInputReceiver,
+    external_tx: external_input::ExternalInputSender,
+    // Kept alive to maintain the MIDI connection; messages flow via external_rx.
+    #[allow(dead_code)]
+    midi_input: Option<crate::midi::MidiInput>,
+    // Kept alive to maintain the OSC listener thread; messages flow via external_rx.
+    #[allow(dead_code)]
+    osc_listener: Option<crate::osc::OscListener>,
     last_tick: Option<Instant>,
     audio_engine: Option<AudioEngine>,
     pub scheduler: Option<EventScheduler>,
@@ -75,6 +91,15 @@ impl App {
     /// Create a new App with initial DSL source.
     pub fn new(source: &str) -> Self {
         let audio_engine = AudioEngine::new().ok();
+        let (external_tx, external_rx) = external_input::external_channel();
+
+        // Attempt MIDI connection
+        let midi_config = crate::midi::MidiConfig::load().unwrap_or_default();
+        let midi_input = crate::midi::MidiInput::start(&midi_config, external_tx.clone()).ok();
+
+        // Attempt OSC listener — only if config file exists
+        let osc_listener = crate::osc::OscConfig::load()
+            .and_then(|config| crate::osc::OscListener::start(&config, external_tx.clone()).ok());
 
         Self {
             editor: Editor::new(source),
@@ -94,6 +119,14 @@ impl App {
             should_quit: false,
             is_playing: false,
             current_beat: Beat::ZERO,
+            crash_log: CrashLog::default(),
+            crash_log_visible: false,
+            macro_history: MacroHistory::new(),
+            grid_zoom: GridZoom::default(),
+            external_rx,
+            external_tx,
+            midi_input,
+            osc_listener,
             last_tick: None,
             audio_engine,
             scheduler: None,
@@ -142,15 +175,83 @@ impl App {
                     );
                 }
             }
-            Action::AdjustMacro(idx, delta) => {
-                let names: Vec<String> = self.macro_engine.macros().keys().cloned().collect();
+            Action::AdjustMacro(idx, delta)
+            | Action::AdjustMacroFine(idx, delta)
+            | Action::AdjustMacroCoarse(idx, delta) => {
+                let names: Vec<String> = {
+                    let mut n: Vec<String> = self.macro_engine.macros().keys().cloned().collect();
+                    n.sort();
+                    n
+                };
                 if let Some(name) = names.get(idx) {
+                    // Record current value before change
+                    if let Some(current) = self.macro_engine.get_macro(name) {
+                        self.macro_history.record(idx, current);
+                    }
                     self.macro_engine.adjust_macro(name, delta);
                     self.macro_panel.update(self.macro_engine.macros());
-                    self.intent_console.log(
-                        format!("adjust {} +{:.2}", name, delta),
-                        self.current_beat.as_beats_f64(),
-                    );
+                    let step_label = match &action {
+                        Action::AdjustMacroFine(_, _) => "fine",
+                        Action::AdjustMacroCoarse(_, _) => "coarse",
+                        _ => "",
+                    };
+                    let msg = if step_label.is_empty() {
+                        format!("adjust {} {delta:+.2}", name)
+                    } else {
+                        format!("adjust {} {delta:+.2} ({step_label})", name)
+                    };
+                    self.intent_console
+                        .log(msg, self.current_beat.as_beats_f64());
+                }
+            }
+            Action::MacroUndo => {
+                // Try undo for all macros — find the most recently changed
+                // For simplicity, we iterate all macro indices and try undo
+                let names: Vec<String> = {
+                    let mut n: Vec<String> = self.macro_engine.macros().keys().cloned().collect();
+                    n.sort();
+                    n
+                };
+                let mut undone = false;
+                for (idx, name) in names.iter().enumerate() {
+                    if let Some(prev) = self.macro_history.undo(idx) {
+                        self.macro_engine.set_macro(name, prev);
+                        self.macro_panel.update(self.macro_engine.macros());
+                        self.intent_console.log(
+                            format!("undo {} -> {prev:.2}", name),
+                            self.current_beat.as_beats_f64(),
+                        );
+                        undone = true;
+                        break;
+                    }
+                }
+                if !undone {
+                    self.intent_console
+                        .log("nothing to undo", self.current_beat.as_beats_f64());
+                }
+            }
+            Action::MacroRedo => {
+                let names: Vec<String> = {
+                    let mut n: Vec<String> = self.macro_engine.macros().keys().cloned().collect();
+                    n.sort();
+                    n
+                };
+                let mut redone = false;
+                for (idx, name) in names.iter().enumerate() {
+                    if let Some(val) = self.macro_history.redo(idx) {
+                        self.macro_engine.set_macro(name, val);
+                        self.macro_panel.update(self.macro_engine.macros());
+                        self.intent_console.log(
+                            format!("redo {} -> {val:.2}", name),
+                            self.current_beat.as_beats_f64(),
+                        );
+                        redone = true;
+                        break;
+                    }
+                }
+                if !redone {
+                    self.intent_console
+                        .log("nothing to redo", self.current_beat.as_beats_f64());
                 }
             }
             Action::ToggleLayer(idx) => {
@@ -195,12 +296,23 @@ impl App {
             Action::ToggleHelp => {
                 self.help_screen.toggle();
             }
+            Action::ToggleCrashLog => {
+                self.crash_log_visible = !self.crash_log_visible;
+            }
             Action::Escape => {
-                if self.help_screen.visible {
+                if self.crash_log_visible {
+                    self.crash_log_visible = false;
+                } else if self.help_screen.visible {
                     self.help_screen.hide();
                 } else if self.focus != FocusPanel::Editor {
                     self.focus = FocusPanel::Editor;
                 }
+            }
+            Action::GridZoomIn => {
+                self.grid_zoom = self.grid_zoom.zoom_in();
+            }
+            Action::GridZoomOut => {
+                self.grid_zoom = self.grid_zoom.zoom_out();
             }
             Action::PanelNavigate(_key_code) => {
                 // Panel-specific navigation — currently a no-op for content scrolling.
@@ -211,6 +323,7 @@ impl App {
 
     /// Advance the current beat — renders audio when pipeline is connected,
     /// falls back to wall-clock advancement for visual-only mode.
+    /// Wrapped in catch_unwind to prevent panics from crashing the UI.
     pub fn advance_beat(&mut self) {
         if !self.is_playing {
             self.last_tick = None;
@@ -219,23 +332,49 @@ impl App {
 
         // Try real audio rendering if the full pipeline is available
         if self.scheduler.is_some() && self.render_fn.is_some() {
-            let scheduler = self.scheduler.as_mut().unwrap();
-            let render_fn = self.render_fn.as_mut().unwrap();
-            let macro_engine = &self.macro_engine;
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let scheduler = self.scheduler.as_mut().unwrap();
+                let render_fn = self.render_fn.as_mut().unwrap();
+                let macro_engine = &self.macro_engine;
 
-            if let Some(samples) =
-                scheduler.render_block_with(render_fn, |e| macro_engine.apply_to_event(e))
-            {
-                // Send samples to audio engine if available
-                if let Some(ref mut engine) = self.audio_engine {
-                    let _ = engine.send_samples(samples);
+                if let Some(samples) =
+                    scheduler.render_block_with(render_fn, |e| macro_engine.apply_to_event(e))
+                {
+                    if let Some(ref mut engine) = self.audio_engine {
+                        let _ = engine.send_samples(samples);
+                    }
+
+                    let pos = scheduler.transport().position();
+                    Some(pos)
+                } else {
+                    None
                 }
+            }));
 
-                // Update beat position from transport
-                self.current_beat = scheduler.transport().position();
-                let total_beats = self.current_beat.as_beats_f64();
-                self.status.position_bars = (total_beats / 4.0).floor() as u64;
-                self.status.position_beats = (total_beats % 4.0).floor() as u64;
+            match result {
+                Ok(Some(pos)) => {
+                    self.current_beat = pos;
+                    let total_beats = self.current_beat.as_beats_f64();
+                    self.status.position_bars = (total_beats / 4.0).floor() as u64;
+                    self.status.position_beats = (total_beats % 4.0).floor() as u64;
+                }
+                Ok(None) => {}
+                Err(panic_info) => {
+                    let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                        format!("audio panic: {s}")
+                    } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                        format!("audio panic: {s}")
+                    } else {
+                        "audio panic: unknown".to_string()
+                    };
+                    self.crash_log.push(msg.clone());
+                    self.intent_console
+                        .log(msg, self.current_beat.as_beats_f64());
+                    // Stop playback on panic to avoid repeated crashes
+                    self.is_playing = false;
+                    self.status.is_playing = false;
+                    self.last_tick = None;
+                }
             }
             return;
         }
@@ -263,11 +402,13 @@ impl App {
     }
 
     /// Compile the editor content and update state.
+    /// Errors are caught and logged to the crash log instead of propagating.
     fn compile_source(&mut self) {
         let source = self.editor.content();
         match Compiler::compile(&source) {
             Ok(song) => {
-                self.status.bpm = song.tempo;
+                // Clamp BPM to valid range
+                self.status.bpm = song.tempo.clamp(20.0, 999.0);
                 self.status.compile_status = CompileStatus::Ok;
                 self.macro_engine = MacroEngine::from_compiled(&song.macros, &song.mappings);
                 self.macro_panel.update(self.macro_engine.macros());
@@ -415,6 +556,11 @@ impl App {
             self.draw_diff_preview(frame, size);
         }
 
+        // Crash log overlay
+        if self.crash_log_visible {
+            self.draw_crash_log(frame, size);
+        }
+
         // Help overlay (rendered on top of everything)
         if self.help_screen.visible {
             self.draw_help(frame, size);
@@ -512,8 +658,9 @@ impl App {
             Style::default().fg(Color::DarkGray)
         };
 
+        let zoom_label = self.grid_zoom.label();
         let block = Block::default()
-            .title(" Grid ")
+            .title(format!(" Grid [{zoom_label}] "))
             .borders(Borders::ALL)
             .border_style(border_style);
 
@@ -528,29 +675,29 @@ impl App {
         } else {
             None
         };
-        let grids = grid::project_events(&self.compiled_events, 2, 8, cursor);
+        let steps_per_bar = self.grid_zoom.steps_per_bar();
+        let grids = grid::project_events(&self.compiled_events, 2, steps_per_bar, cursor);
 
         let lines: Vec<Line> = grids
             .iter()
             .map(|tg| {
+                let tc = grid::track_color(&tg.track_name);
                 let mut spans = vec![Span::styled(
                     format!("{:>8} ", tg.track_name),
-                    Style::default().fg(Color::Yellow),
+                    Style::default().fg(tc),
                 )];
                 for cell in &tg.cells {
                     let (text, color) = match cell {
                         GridCell::Empty => (".", Color::DarkGray),
                         GridCell::Hit(v) => {
+                            let c = grid::velocity_color(*v, tc);
                             if *v > 0.6 {
-                                ("X", Color::White)
+                                ("X", c)
                             } else {
-                                ("x", Color::Gray)
+                                ("x", c)
                             }
                         }
-                        GridCell::Note(n) => {
-                            let _ = n; // note number available for future display
-                            ("N", Color::Cyan)
-                        }
+                        GridCell::Note(_) => ("N", tc),
                         GridCell::Cursor => ("|", Color::Green),
                     };
                     spans.push(Span::styled(format!("{text} "), Style::default().fg(color)));
@@ -701,8 +848,54 @@ impl App {
         frame.render_widget(paragraph, inner);
     }
 
+    fn draw_crash_log(&self, frame: &mut Frame, area: Rect) {
+        let width = (area.width * 70 / 100).max(50);
+        let height = (area.height * 50 / 100).max(10);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let overlay = Rect::new(x, y, width, height);
+
+        let block = Block::default()
+            .style(Style::default().bg(Color::Black))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Red))
+            .title(" Crash Log — Press Ctrl-L or Esc to close ");
+        let inner = block.inner(overlay);
+        frame.render_widget(block, overlay);
+
+        if self.crash_log.is_empty() {
+            let paragraph =
+                Paragraph::new("(no errors recorded)").style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(paragraph, inner);
+        } else {
+            let lines: Vec<Line> = self
+                .crash_log
+                .entries()
+                .map(|entry| {
+                    let elapsed = entry
+                        .timestamp
+                        .elapsed()
+                        .map(|d| format!("{:.0}s ago", d.as_secs_f64()))
+                        .unwrap_or_else(|_| "?".to_string());
+                    Line::from(vec![
+                        Span::styled(
+                            format!("[{elapsed}] "),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::styled(&entry.message, Style::default().fg(Color::Red)),
+                    ])
+                })
+                .collect();
+            let paragraph = Paragraph::new(lines);
+            frame.render_widget(paragraph, inner);
+        }
+    }
+
     /// Context-sensitive hint for the status bar.
     pub fn context_hint(&self) -> &str {
+        if self.crash_log_visible {
+            return "Ctrl-L/Esc:close crash log";
+        }
         if self.help_screen.visible {
             return "?/Esc:close help  Up/Down:scroll";
         }
@@ -725,6 +918,17 @@ impl App {
             CompileStatus::Idle => Span::styled(" -- ", Style::default().fg(Color::DarkGray)),
         };
 
+        let midi_indicator = if self.midi_input.is_some() {
+            Span::styled(" MIDI ", Style::default().fg(Color::Green))
+        } else {
+            Span::styled(" MIDI ", Style::default().fg(Color::DarkGray))
+        };
+        let osc_indicator = if self.osc_listener.is_some() {
+            Span::styled(" OSC ", Style::default().fg(Color::Green))
+        } else {
+            Span::styled(" OSC ", Style::default().fg(Color::DarkGray))
+        };
+
         let line = Line::from(vec![
             Span::styled(
                 format!(" {} ", self.status.playback_display()),
@@ -737,12 +941,15 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
-                " BPM:{:.0} | {} | {} ",
+                " BPM:{:.0} | {} | {} | Z:{} ",
                 self.status.bpm,
                 self.status.position_display(),
                 self.status.mode_display(),
+                self.grid_zoom.label(),
             )),
             compile_indicator,
+            midi_indicator,
+            osc_indicator,
             Span::styled(
                 format!(" {} ", self.context_hint()),
                 Style::default().fg(Color::DarkGray),
@@ -752,6 +959,49 @@ impl App {
         let paragraph =
             Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
         frame.render_widget(paragraph, area);
+    }
+
+    /// Get a clone of the external input sender for MIDI/OSC threads.
+    pub fn external_sender(&self) -> external_input::ExternalInputSender {
+        self.external_tx.clone()
+    }
+
+    /// Process external events from MIDI/OSC/etc.
+    fn process_external_events(&mut self) {
+        let events = self.external_rx.drain();
+        for event in events {
+            match event {
+                external_input::ExternalEvent::MacroSet { name, value } => {
+                    self.macro_engine.set_macro(&name, value);
+                    self.macro_panel.update(self.macro_engine.macros());
+                    self.intent_console.log(
+                        format!("ext: set {} = {value:.2}", name),
+                        self.current_beat.as_beats_f64(),
+                    );
+                }
+                external_input::ExternalEvent::SectionJump(idx) => {
+                    self.handle_action(Action::JumpSection(idx));
+                }
+                external_input::ExternalEvent::LayerToggle(idx) => {
+                    self.handle_action(Action::ToggleLayer(idx));
+                }
+                external_input::ExternalEvent::BpmSet(bpm) => {
+                    self.status.bpm = bpm.clamp(20.0, 999.0);
+                    self.intent_console.log(
+                        format!("ext: BPM = {:.0}", self.status.bpm),
+                        self.current_beat.as_beats_f64(),
+                    );
+                }
+                external_input::ExternalEvent::PlayStop => {
+                    self.handle_action(Action::TogglePlayback);
+                }
+                external_input::ExternalEvent::NoteOn { .. }
+                | external_input::ExternalEvent::NoteOff { .. }
+                | external_input::ExternalEvent::CC { .. } => {
+                    // Future: route to instrument engine
+                }
+            }
+        }
     }
 
     /// Run the TUI event loop.
@@ -778,6 +1028,9 @@ impl App {
                     }
                 }
             }
+
+            // Process external input (MIDI, OSC, etc.)
+            self.process_external_events();
 
             // Advance beat when playing
             self.advance_beat();
@@ -1089,5 +1342,106 @@ mod tests {
         app.mode = AppMode::Edit;
         app.focus = FocusPanel::Tracks;
         assert!(app.context_hint().contains("Esc:back to editor"));
+    }
+
+    // --- Stability hardening tests ---
+
+    #[test]
+    fn crash_log_toggle_action() {
+        let mut app = App::new("");
+        assert!(!app.crash_log_visible);
+        app.handle_action(Action::ToggleCrashLog);
+        assert!(app.crash_log_visible);
+        app.handle_action(Action::ToggleCrashLog);
+        assert!(!app.crash_log_visible);
+    }
+
+    #[test]
+    fn escape_closes_crash_log() {
+        let mut app = App::new("");
+        app.crash_log_visible = true;
+        app.handle_action(Action::Escape);
+        assert!(!app.crash_log_visible);
+    }
+
+    #[test]
+    fn escape_closes_crash_log_before_help() {
+        let mut app = App::new("");
+        app.crash_log_visible = true;
+        app.help_screen.show();
+        app.handle_action(Action::Escape);
+        // Crash log should close first
+        assert!(!app.crash_log_visible);
+        assert!(app.help_screen.visible);
+    }
+
+    #[test]
+    fn compile_error_does_not_crash() {
+        let mut app = App::new("invalid source {{{");
+        app.handle_action(Action::CompileReload);
+        assert!(matches!(app.status.compile_status, CompileStatus::Error(_)));
+        // App should still be functional
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn bpm_clamped_low() {
+        let src = "tempo 5\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+        assert!(app.status.bpm >= 20.0);
+    }
+
+    #[test]
+    fn bpm_clamped_high() {
+        let src = "tempo 10000\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+        assert!(app.status.bpm <= 999.0);
+    }
+
+    #[test]
+    fn context_hint_crash_log_visible() {
+        let mut app = App::new("");
+        app.crash_log_visible = true;
+        assert!(app.context_hint().contains("crash log"));
+    }
+
+    // --- External input tests ---
+
+    #[test]
+    fn external_sender_clone_works() {
+        let app = App::new("");
+        let _tx = app.external_sender();
+    }
+
+    #[test]
+    fn external_macro_set_updates_engine() {
+        let src = "macro filter = 0.5\nmap filter -> cutoff (0.0..1.0) linear\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+
+        let tx = app.external_sender();
+        tx.send(external_input::ExternalEvent::MacroSet {
+            name: "filter".to_string(),
+            value: 0.9,
+        })
+        .unwrap();
+        app.process_external_events();
+
+        let val = app.macro_engine.get_macro("filter").unwrap();
+        assert!((val - 0.9).abs() < f64::EPSILON);
+    }
+
+    // --- Grid zoom tests ---
+
+    #[test]
+    fn grid_zoom_in_out() {
+        let mut app = App::new("");
+        assert_eq!(app.grid_zoom, GridZoom::Beat);
+        app.handle_action(Action::GridZoomOut);
+        assert_eq!(app.grid_zoom, GridZoom::HalfBar);
+        app.handle_action(Action::GridZoomIn);
+        assert_eq!(app.grid_zoom, GridZoom::Beat);
     }
 }
