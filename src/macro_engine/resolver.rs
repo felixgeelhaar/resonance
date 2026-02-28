@@ -155,7 +155,7 @@ mod tests {
                 source: MappingSource::Layer(2),
             },
         ];
-        let (winners, conflicts) = resolve_mappings(&sourced);
+        let (winners, _conflicts) = resolve_mappings(&sourced);
         assert_eq!(winners.len(), 1);
         assert_eq!(winners[0].source, MappingSource::Layer(2));
         assert_eq!(winners[0].mapping.macro_name, "depth_high");

@@ -8,7 +8,7 @@ license = "MIT"
 
 [dependencies]
 cpal = "0.15"
-ratatui = "0.29"
+ratatui = "0.30"
 crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

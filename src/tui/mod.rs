@@ -693,7 +693,9 @@ impl App {
         terminal: &mut ratatui::Terminal<impl ratatui::backend::Backend>,
     ) -> io::Result<()> {
         while !self.should_quit {
-            terminal.draw(|frame| self.draw(frame))?;
+            terminal
+                .draw(|frame| self.draw(frame))
+                .map_err(|e| io::Error::other(e.to_string()))?;
 
             // Poll for input with a short timeout (5ms for responsive audio)
             if event::poll(Duration::from_millis(5))? {
