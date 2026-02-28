@@ -581,12 +581,13 @@ fn full_lifecycle_compile_play_verify() {
     app.handle_action(Action::TogglePlayback);
     assert!(app.is_playing);
 
-    // Step 4: Advance beat
-    app.advance_beat();
-    app.set_last_tick(Instant::now() - Duration::from_millis(1000));
-    app.advance_beat();
+    // Step 4: Advance beat — with scheduler connected, each advance_beat()
+    // renders one 1024-frame block. Need ~43 blocks per beat at 44100 Hz / 128 BPM.
+    // Render enough blocks to advance past beat 1.
+    for _ in 0..100 {
+        app.advance_beat();
+    }
 
-    // At 128BPM, 1 second ≈ 2.13 beats
     assert!(app.current_beat.ticks() > 0);
     assert!(app.status.position_bars > 0 || app.status.position_beats > 0);
 
@@ -623,4 +624,83 @@ fn full_lifecycle_focus_isolation_during_edit() {
     app.focus = FocusPanel::Editor;
     app.handle_action(Action::EditorInsert('s'));
     assert_eq!(app.editor.content(), "tes");
+}
+
+// =============================================================================
+// Audio Pipeline Integration Tests
+// =============================================================================
+
+#[test]
+fn compile_creates_scheduler() {
+    let mut app = App::new(sample_src());
+    assert!(
+        app.scheduler.is_none(),
+        "scheduler should be None before compile"
+    );
+
+    app.handle_action(Action::CompileReload);
+    assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    assert!(
+        app.scheduler.is_some(),
+        "scheduler should be Some after compile"
+    );
+}
+
+#[test]
+fn play_with_scheduler() {
+    let mut app = App::new(sample_src());
+    app.handle_action(Action::CompileReload);
+    assert!(app.scheduler.is_some());
+
+    // Start playback
+    app.handle_action(Action::TogglePlayback);
+    assert!(app.is_playing);
+
+    // Scheduler should be in playing state
+    let transport = app.scheduler.as_ref().unwrap().transport();
+    assert_eq!(transport.state(), resonance::event::PlayState::Playing);
+
+    // Stop playback
+    app.handle_action(Action::TogglePlayback);
+    assert!(!app.is_playing);
+    let transport = app.scheduler.as_ref().unwrap().transport();
+    assert_eq!(transport.state(), resonance::event::PlayState::Stopped);
+}
+
+#[test]
+fn recompile_while_playing() {
+    let mut app = App::new(sample_src());
+    app.handle_action(Action::CompileReload);
+    app.handle_action(Action::TogglePlayback);
+    assert!(app.is_playing);
+
+    // Advance a few blocks
+    for _ in 0..10 {
+        app.advance_beat();
+    }
+    let _beat_before = app.current_beat;
+
+    // Recompile while playing — should create fresh scheduler (which starts playing)
+    app.handle_action(Action::CompileReload);
+    assert!(app.scheduler.is_some());
+
+    // The fresh scheduler should be in playing state (since is_playing was true)
+    let transport = app.scheduler.as_ref().unwrap().transport();
+    assert_eq!(transport.state(), resonance::event::PlayState::Playing);
+
+    // Position resets because it's a new scheduler
+    assert_eq!(
+        transport.position(),
+        resonance::event::Beat::ZERO,
+        "fresh scheduler should start from beat zero"
+    );
+
+    // But we can continue advancing
+    for _ in 0..10 {
+        app.advance_beat();
+    }
+    assert!(
+        app.current_beat.ticks() > 0,
+        "should advance after recompile"
+    );
 }

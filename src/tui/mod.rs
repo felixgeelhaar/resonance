@@ -37,9 +37,11 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 
+use crate::audio::AudioEngine;
 use crate::dsl::Compiler;
 use crate::event::types::ParamId;
-use crate::event::Beat;
+use crate::event::{Beat, EventScheduler, RenderFn};
+use crate::instrument::{build_default_kit, InstrumentRouter};
 use crate::intent::{IntentProcessor, PerformanceIntent};
 use crate::macro_engine::{MacroEngine, Mapping};
 use crate::section::{Section, SectionController};
@@ -64,11 +66,16 @@ pub struct App {
     pub is_playing: bool,
     pub current_beat: Beat,
     last_tick: Option<Instant>,
+    audio_engine: Option<AudioEngine>,
+    pub scheduler: Option<EventScheduler>,
+    render_fn: Option<RenderFn>,
 }
 
 impl App {
     /// Create a new App with initial DSL source.
     pub fn new(source: &str) -> Self {
+        let audio_engine = AudioEngine::new().ok();
+
         Self {
             editor: Editor::new(source),
             mode: AppMode::Edit,
@@ -88,6 +95,9 @@ impl App {
             is_playing: false,
             current_beat: Beat::ZERO,
             last_tick: None,
+            audio_engine,
+            scheduler: None,
+            render_fn: None,
         }
     }
 
@@ -98,6 +108,22 @@ impl App {
             Action::TogglePlayback => {
                 self.is_playing = !self.is_playing;
                 self.status.is_playing = self.is_playing;
+                if self.is_playing {
+                    if let Some(ref mut scheduler) = self.scheduler {
+                        scheduler.play();
+                    }
+                    if let Some(ref engine) = self.audio_engine {
+                        let _ = engine.play();
+                    }
+                } else {
+                    if let Some(ref mut scheduler) = self.scheduler {
+                        scheduler.stop();
+                    }
+                    if let Some(ref mut engine) = self.audio_engine {
+                        let _ = engine.stop();
+                    }
+                    self.last_tick = None;
+                }
             }
             Action::CompileReload => self.compile_source(),
             Action::ToggleMode => {
@@ -183,13 +209,38 @@ impl App {
         }
     }
 
-    /// Advance the current beat based on elapsed wall-clock time and BPM.
+    /// Advance the current beat — renders audio when pipeline is connected,
+    /// falls back to wall-clock advancement for visual-only mode.
     pub fn advance_beat(&mut self) {
         if !self.is_playing {
             self.last_tick = None;
             return;
         }
 
+        // Try real audio rendering if the full pipeline is available
+        if self.scheduler.is_some() && self.render_fn.is_some() {
+            let scheduler = self.scheduler.as_mut().unwrap();
+            let render_fn = self.render_fn.as_mut().unwrap();
+            let macro_engine = &self.macro_engine;
+
+            if let Some(samples) =
+                scheduler.render_block_with(render_fn, |e| macro_engine.apply_to_event(e))
+            {
+                // Send samples to audio engine if available
+                if let Some(ref mut engine) = self.audio_engine {
+                    let _ = engine.send_samples(samples);
+                }
+
+                // Update beat position from transport
+                self.current_beat = scheduler.transport().position();
+                let total_beats = self.current_beat.as_beats_f64();
+                self.status.position_bars = (total_beats / 4.0).floor() as u64;
+                self.status.position_beats = (total_beats % 4.0).floor() as u64;
+            }
+            return;
+        }
+
+        // Wall-clock fallback: visual-only mode (no scheduler)
         let now = Instant::now();
         if let Some(last) = self.last_tick {
             let elapsed = now.duration_since(last);
@@ -198,7 +249,6 @@ impl App {
             let delta_ticks = (ticks_per_second * elapsed.as_secs_f64()).round() as u64;
             if delta_ticks > 0 {
                 self.current_beat = Beat::from_ticks(self.current_beat.ticks() + delta_ticks);
-                // Update status display
                 let total_beats = self.current_beat.as_beats_f64();
                 self.status.position_bars = (total_beats / 4.0).floor() as u64;
                 self.status.position_beats = (total_beats % 4.0).floor() as u64;
@@ -275,6 +325,23 @@ impl App {
 
                 // Store compiled events for grid visualization
                 self.compiled_events = song.events.clone();
+
+                // Build audio pipeline: scheduler + instrument router
+                let seed = 42u64;
+                let (sample_rate, channels) = match &self.audio_engine {
+                    Some(engine) => (engine.sample_rate(), engine.channels()),
+                    None => (44100, 2),
+                };
+                let bank = build_default_kit(sample_rate, seed);
+                let router = InstrumentRouter::from_track_defs(&song.track_defs, bank, seed);
+                let mut scheduler =
+                    EventScheduler::new(song.tempo, sample_rate, channels, 1024, seed);
+                scheduler.timeline_mut().insert_batch(song.events.clone());
+                if self.is_playing {
+                    scheduler.play();
+                }
+                self.scheduler = Some(scheduler);
+                self.render_fn = Some(router.into_render_fn());
 
                 self.intent_console
                     .log("compiled OK", self.current_beat.as_beats_f64());
