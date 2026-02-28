@@ -1,4 +1,8 @@
 //! Intent processor — performance intents (quantized) vs structural intents (diff-based).
+//!
+//! Phase 1 implements only performance intents (macro-only).
+//! Structural intents (diff-based code changes) are planned for Phase 2.
 
-/// Placeholder for the intent processor.
-pub struct IntentProcessor;
+pub mod performance;
+
+pub use performance::{IntentProcessor, PerformanceIntent};

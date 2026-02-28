@@ -16,7 +16,7 @@ pub mod types;
 pub use beat::{Beat, DEFAULT_BEATS_PER_BAR, TICKS_PER_BEAT};
 pub use timeline::Timeline;
 pub use transport::{PlayState, Transport};
-pub use types::{Event, NoteOrSample, Params, TrackId};
+pub use types::{Event, NoteOrSample, ParamId, Params, TrackId};
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -108,6 +108,75 @@ impl EventScheduler {
     /// Set BPM (takes effect on the next render_block call).
     pub fn set_bpm(&mut self, bpm: f64) {
         self.transport.set_bpm(bpm);
+    }
+
+    /// Render the next block, applying a preprocessing function to each event
+    /// before rendering. This is used by the macro engine to inject parameters.
+    pub fn render_block_with<F>(
+        &mut self,
+        render_fn: &mut RenderFn,
+        mut preprocess: F,
+    ) -> Option<Vec<f32>>
+    where
+        F: FnMut(&mut Event),
+    {
+        let (from, to) = self.transport.advance_by_frames(self.block_size_frames)?;
+
+        let channels = self.transport.channels() as usize;
+        let block_samples = self.block_size_frames as usize * channels;
+        let mut output = vec![0.0f32; block_samples];
+
+        // Mix in overlap from previous block
+        let overlap_len = self.overlap_buffer.len().min(block_samples);
+        for (out, &ovl) in output[..overlap_len]
+            .iter_mut()
+            .zip(&self.overlap_buffer[..overlap_len])
+        {
+            *out += ovl;
+        }
+        if self.overlap_buffer.len() > block_samples {
+            self.overlap_buffer = self.overlap_buffer[block_samples..].to_vec();
+        } else {
+            self.overlap_buffer.clear();
+        }
+
+        let bpm = self.transport.bpm();
+        let sample_rate = self.transport.sample_rate();
+        let ctx = RenderContext {
+            sample_rate,
+            channels: channels as u16,
+            bpm,
+        };
+
+        let block_start_sample = from.to_sample_offset(bpm, sample_rate);
+
+        let mut events = self.timeline.drain_range(from, to);
+        for event in &mut events {
+            preprocess(event);
+            let rendered = render_fn(event, &ctx);
+            if rendered.is_empty() {
+                continue;
+            }
+
+            let event_global_sample = event.time.to_sample_offset(bpm, sample_rate);
+            let offset_frames = event_global_sample.saturating_sub(block_start_sample);
+            let offset_samples = offset_frames as usize * channels;
+
+            for (i, &sample) in rendered.iter().enumerate() {
+                let pos = offset_samples + i;
+                if pos < block_samples {
+                    output[pos] += sample;
+                } else {
+                    let overlap_pos = pos - block_samples;
+                    if overlap_pos >= self.overlap_buffer.len() {
+                        self.overlap_buffer.resize(overlap_pos + 1, 0.0);
+                    }
+                    self.overlap_buffer[overlap_pos] += sample;
+                }
+            }
+        }
+
+        Some(output)
     }
 
     /// Render the next block of audio samples.

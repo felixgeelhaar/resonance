@@ -3,11 +3,17 @@
 //! An [`Event`] represents a single note or sample trigger at a specific point
 //! in musical time, with velocity, duration, and extensible parameters.
 
+use std::collections::HashMap;
+
 use super::beat::Beat;
 
 /// Identifies a track in the event stream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TrackId(pub u32);
+
+/// Identifies a parameter target for macro mappings.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ParamId(pub String);
 
 /// What the event triggers: a pitched note or a named sample.
 #[derive(Debug, Clone, PartialEq)]
@@ -18,9 +24,25 @@ pub enum NoteOrSample {
     Sample(String),
 }
 
-/// Extensible parameter bag for events. Empty in Phase 0.
+/// Extensible parameter bag for events.
+///
+/// Stores macro-controlled parameters as `ParamId → f32` mappings.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Params {}
+pub struct Params {
+    pub values: HashMap<ParamId, f32>,
+}
+
+impl Params {
+    /// Get a parameter value by id.
+    pub fn get(&self, id: &ParamId) -> Option<f32> {
+        self.values.get(id).copied()
+    }
+
+    /// Set a parameter value.
+    pub fn set(&mut self, id: ParamId, value: f32) {
+        self.values.insert(id, value);
+    }
+}
 
 /// A single event on the timeline.
 #[derive(Debug, Clone)]
@@ -118,8 +140,50 @@ mod tests {
     }
 
     #[test]
-    fn params_default() {
+    fn params_default_is_empty() {
         let p = Params::default();
-        assert_eq!(p, Params {});
+        assert!(p.values.is_empty());
+    }
+
+    #[test]
+    fn params_set_and_get() {
+        let mut p = Params::default();
+        let id = ParamId("filter_cutoff".to_string());
+        p.set(id.clone(), 0.75);
+        assert!((p.get(&id).unwrap() - 0.75).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn params_get_missing_returns_none() {
+        let p = Params::default();
+        assert!(p.get(&ParamId("missing".to_string())).is_none());
+    }
+
+    #[test]
+    fn params_overwrite() {
+        let mut p = Params::default();
+        let id = ParamId("volume".to_string());
+        p.set(id.clone(), 0.5);
+        p.set(id.clone(), 0.9);
+        assert!((p.get(&id).unwrap() - 0.9).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn param_id_equality() {
+        let a = ParamId("cutoff".to_string());
+        let b = ParamId("cutoff".to_string());
+        let c = ParamId("resonance".to_string());
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn param_id_hash_works() {
+        use std::collections::HashSet;
+        let mut set = HashSet::new();
+        set.insert(ParamId("a".to_string()));
+        set.insert(ParamId("b".to_string()));
+        set.insert(ParamId("a".to_string()));
+        assert_eq!(set.len(), 2);
     }
 }

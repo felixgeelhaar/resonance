@@ -2,7 +2,7 @@
 
 use crate::event::{Event, NoteOrSample, RenderContext, RenderFn};
 
-use super::SampleBank;
+use super::{Instrument, SampleBank};
 
 /// A drum kit that renders sample-trigger events using a [`SampleBank`].
 pub struct DrumKit {
@@ -15,13 +15,14 @@ impl DrumKit {
         Self { bank }
     }
 
-    /// Render a single event into interleaved stereo samples.
-    ///
-    /// - `NoteOrSample::Sample(name)` → look up in bank, velocity-scale, expand mono→stereo.
-    /// - `NoteOrSample::Note(_)` → returns empty (drum kit only handles samples).
-    /// - Unknown sample name → returns empty.
-    /// - Velocity of 0.0 → returns empty.
-    pub fn render(&self, event: &Event, _ctx: &RenderContext) -> Vec<f32> {
+    /// Convert this drum kit into a boxed [`RenderFn`] compatible with `EventScheduler`.
+    pub fn into_render_fn(self) -> RenderFn {
+        Box::new(move |event: &Event, ctx: &RenderContext| Instrument::render(&self, event, ctx))
+    }
+}
+
+impl Instrument for DrumKit {
+    fn render(&self, event: &Event, _ctx: &RenderContext) -> Vec<f32> {
         let name = match &event.trigger {
             NoteOrSample::Sample(name) => name,
             NoteOrSample::Note(_) => return Vec::new(),
@@ -50,9 +51,8 @@ impl DrumKit {
         output
     }
 
-    /// Convert this drum kit into a boxed [`RenderFn`] compatible with `EventScheduler`.
-    pub fn into_render_fn(self) -> RenderFn {
-        Box::new(move |event: &Event, ctx: &RenderContext| self.render(event, ctx))
+    fn name(&self) -> &str {
+        "drum_kit"
     }
 }
 
@@ -60,7 +60,7 @@ impl DrumKit {
 mod tests {
     use super::*;
     use crate::event::{Beat, TrackId};
-    use crate::instrument::SampleData;
+    use crate::instrument::{Instrument, SampleData};
 
     fn test_ctx() -> RenderContext {
         RenderContext {
@@ -137,6 +137,21 @@ mod tests {
         let ctx = test_ctx();
         let out = kit.render(&event, &ctx);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn instrument_trait_name() {
+        let kit = DrumKit::new(test_bank());
+        assert_eq!(Instrument::name(&kit), "drum_kit");
+    }
+
+    #[test]
+    fn instrument_trait_render() {
+        let kit = DrumKit::new(test_bank());
+        let event = Event::sample(Beat::ZERO, Beat::from_beats(1), TrackId(0), "kick", 1.0);
+        let ctx = test_ctx();
+        let out = Instrument::render(&kit, &event, &ctx);
+        assert_eq!(out.len(), 6);
     }
 
     #[test]
