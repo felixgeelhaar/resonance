@@ -19,6 +19,8 @@ rand_chacha = "0.3"
 dirs = "5"
 midir = "0.10"
 rosc = "0.11"
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
 
 [dev-dependencies]
 assert_approx_eq = "1.1"

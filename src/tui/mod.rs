@@ -40,6 +40,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 
+/// Debounce delay before auto-recompiling after an edit (milliseconds).
+const COMPILE_DEBOUNCE_MS: u64 = 300;
+
 use crate::audio::AudioEngine;
 use crate::dsl::Compiler;
 use crate::event::types::ParamId;
@@ -85,6 +88,8 @@ pub struct App {
     audio_engine: Option<AudioEngine>,
     pub scheduler: Option<EventScheduler>,
     render_fn: Option<RenderFn>,
+    dirty: bool,
+    last_edit: Option<Instant>,
 }
 
 impl App {
@@ -131,6 +136,8 @@ impl App {
             audio_engine,
             scheduler: None,
             render_fn: None,
+            dirty: false,
+            last_edit: None,
         }
     }
 
@@ -283,14 +290,30 @@ impl App {
             Action::DiffScrollDown => {
                 self.diff_preview.scroll_down(20);
             }
-            Action::EditorInsert(c) => self.editor.insert_char(c),
-            Action::EditorBackspace => self.editor.backspace(),
-            Action::EditorDelete => self.editor.delete(),
+            Action::EditorInsert(c) => {
+                self.editor.insert_char(c);
+                self.dirty = true;
+                self.last_edit = Some(Instant::now());
+            }
+            Action::EditorBackspace => {
+                self.editor.backspace();
+                self.dirty = true;
+                self.last_edit = Some(Instant::now());
+            }
+            Action::EditorDelete => {
+                self.editor.delete();
+                self.dirty = true;
+                self.last_edit = Some(Instant::now());
+            }
             Action::EditorLeft => self.editor.move_left(),
             Action::EditorRight => self.editor.move_right(),
             Action::EditorUp => self.editor.move_up(),
             Action::EditorDown => self.editor.move_down(),
-            Action::EditorNewline => self.editor.newline(),
+            Action::EditorNewline => {
+                self.editor.newline();
+                self.dirty = true;
+                self.last_edit = Some(Instant::now());
+            }
             Action::EditorHome => self.editor.home(),
             Action::EditorEnd => self.editor.end(),
             Action::ToggleHelp => {
@@ -513,7 +536,7 @@ impl App {
     }
 
     /// Draw the UI.
-    pub fn draw(&self, frame: &mut Frame) {
+    pub fn draw(&mut self, frame: &mut Frame) {
         let size = frame.area();
 
         // Main vertical layout
@@ -567,7 +590,7 @@ impl App {
         }
     }
 
-    fn draw_editor(&self, frame: &mut Frame, area: Rect) {
+    fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Editor;
         let border_style = if focused {
             Style::default().fg(Color::Cyan)
@@ -575,11 +598,18 @@ impl App {
             Style::default().fg(Color::DarkGray)
         };
 
+        // Compute inner height (subtract 2 for top+bottom borders)
+        let inner_height = area.height.saturating_sub(2) as usize;
+        self.editor.set_viewport_height(inner_height);
+        let scroll_offset = self.editor.scroll_offset();
+
         let lines: Vec<Line> = self
             .editor
             .lines()
             .iter()
             .enumerate()
+            .skip(scroll_offset)
+            .take(inner_height)
             .map(|(i, line)| {
                 let num = Span::styled(
                     format!("{:3} ", i + 1),
@@ -608,9 +638,9 @@ impl App {
         // Show cursor in edit mode
         if focused && self.mode == AppMode::Edit {
             let (row, col) = self.editor.cursor();
-            // +1 for border, +4 for line number
+            // +1 for border, +4 for line number; adjust row by scroll_offset
             let x = area.x + 1 + 4 + col as u16;
-            let y = area.y + 1 + row as u16;
+            let y = area.y + 1 + (row - scroll_offset) as u16;
             if x < area.x + area.width && y < area.y + area.height {
                 frame.set_cursor_position((x, y));
             }
@@ -1029,6 +1059,17 @@ impl App {
                 }
             }
 
+            // Auto-recompile after debounce period
+            if self.dirty {
+                if let Some(last) = self.last_edit {
+                    if last.elapsed() >= Duration::from_millis(COMPILE_DEBOUNCE_MS) {
+                        self.compile_source();
+                        self.dirty = false;
+                        self.last_edit = None;
+                    }
+                }
+            }
+
             // Process external input (MIDI, OSC, etc.)
             self.process_external_events();
 
@@ -1443,5 +1484,46 @@ mod tests {
         assert_eq!(app.grid_zoom, GridZoom::HalfBar);
         app.handle_action(Action::GridZoomIn);
         assert_eq!(app.grid_zoom, GridZoom::Beat);
+    }
+
+    // --- Auto-recompile tests ---
+
+    #[test]
+    fn dirty_flag_set_on_editor_insert() {
+        let mut app = App::new("");
+        assert!(!app.dirty);
+        app.handle_action(Action::EditorInsert('x'));
+        assert!(app.dirty);
+        assert!(app.last_edit.is_some());
+    }
+
+    #[test]
+    fn dirty_flag_set_on_editor_backspace() {
+        let mut app = App::new("ab");
+        app.editor.move_right();
+        app.handle_action(Action::EditorBackspace);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn dirty_flag_set_on_editor_newline() {
+        let mut app = App::new("hello");
+        app.handle_action(Action::EditorNewline);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn dirty_flag_set_on_editor_delete() {
+        let mut app = App::new("ab");
+        app.handle_action(Action::EditorDelete);
+        assert!(app.dirty);
+    }
+
+    #[test]
+    fn manual_compile_still_works() {
+        let src = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+        assert_eq!(app.status.compile_status, CompileStatus::Ok);
     }
 }

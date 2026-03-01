@@ -6,6 +6,8 @@ pub struct Editor {
     lines: Vec<String>,
     cursor_row: usize,
     cursor_col: usize,
+    scroll_offset: usize,
+    viewport_height: usize,
 }
 
 impl Editor {
@@ -20,6 +22,8 @@ impl Editor {
             lines,
             cursor_row: 0,
             cursor_col: 0,
+            scroll_offset: 0,
+            viewport_height: 20,
         }
     }
 
@@ -36,6 +40,29 @@ impl Editor {
     /// Get cursor position (row, col).
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor_row, self.cursor_col)
+    }
+
+    /// Get the current scroll offset (first visible line).
+    pub fn scroll_offset(&self) -> usize {
+        self.scroll_offset
+    }
+
+    /// Set the viewport height (number of visible lines).
+    pub fn set_viewport_height(&mut self, h: usize) {
+        self.viewport_height = h.max(1);
+        self.ensure_cursor_visible();
+    }
+
+    /// Ensure the cursor is within the visible viewport, adjusting scroll_offset.
+    fn ensure_cursor_visible(&mut self) {
+        if self.viewport_height == 0 {
+            return;
+        }
+        if self.cursor_row < self.scroll_offset {
+            self.scroll_offset = self.cursor_row;
+        } else if self.cursor_row >= self.scroll_offset + self.viewport_height {
+            self.scroll_offset = self.cursor_row - self.viewport_height + 1;
+        }
     }
 
     /// Insert a character at the cursor.
@@ -57,6 +84,7 @@ impl Editor {
             self.cursor_row += 1;
             self.lines.insert(self.cursor_row, rest);
             self.cursor_col = 0;
+            self.ensure_cursor_visible();
         }
     }
 
@@ -71,6 +99,7 @@ impl Editor {
             self.cursor_row -= 1;
             self.cursor_col = self.lines[self.cursor_row].len();
             self.lines[self.cursor_row].push_str(&current_line);
+            self.ensure_cursor_visible();
         }
     }
 
@@ -111,6 +140,7 @@ impl Editor {
         if self.cursor_row > 0 {
             self.cursor_row -= 1;
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+            self.ensure_cursor_visible();
         }
     }
 
@@ -119,6 +149,7 @@ impl Editor {
         if self.cursor_row + 1 < self.lines.len() {
             self.cursor_row += 1;
             self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+            self.ensure_cursor_visible();
         }
     }
 
@@ -141,6 +172,7 @@ impl Editor {
         };
         self.cursor_row = 0;
         self.cursor_col = 0;
+        self.scroll_offset = 0;
     }
 
     /// Number of lines.
@@ -275,5 +307,84 @@ mod tests {
         let src = "tempo 128\ntrack drums {\n  kit: default\n}";
         let ed = Editor::new(src);
         assert_eq!(ed.content(), src);
+    }
+
+    #[test]
+    fn scroll_offset_starts_at_zero() {
+        let ed = Editor::new("hello\nworld");
+        assert_eq!(ed.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn cursor_below_viewport_scrolls_down() {
+        let content: String = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut ed = Editor::new(&content);
+        ed.set_viewport_height(10);
+        // Move cursor to row 25
+        for _ in 0..25 {
+            ed.move_down();
+        }
+        assert_eq!(ed.cursor().0, 25);
+        assert_eq!(ed.scroll_offset(), 16); // 25 - 10 + 1
+    }
+
+    #[test]
+    fn cursor_above_viewport_scrolls_up() {
+        let content: String = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut ed = Editor::new(&content);
+        ed.set_viewport_height(10);
+        // Move down to row 25, then back up past scroll_offset
+        for _ in 0..25 {
+            ed.move_down();
+        }
+        assert_eq!(ed.scroll_offset(), 16);
+        // Move up to row 10 — should adjust scroll_offset
+        for _ in 0..15 {
+            ed.move_up();
+        }
+        assert_eq!(ed.cursor().0, 10);
+        assert_eq!(ed.scroll_offset(), 10);
+    }
+
+    #[test]
+    fn set_content_resets_scroll_offset() {
+        let content: String = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut ed = Editor::new(&content);
+        ed.set_viewport_height(10);
+        for _ in 0..25 {
+            ed.move_down();
+        }
+        assert!(ed.scroll_offset() > 0);
+        ed.set_content("new content");
+        assert_eq!(ed.scroll_offset(), 0);
+        assert_eq!(ed.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn newline_scrolls_when_at_bottom() {
+        let content: String = (0..15)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut ed = Editor::new(&content);
+        ed.set_viewport_height(10);
+        // Move to row 9 (last visible row when scroll_offset=0)
+        for _ in 0..9 {
+            ed.move_down();
+        }
+        assert_eq!(ed.scroll_offset(), 0);
+        // Newline should push cursor to row 10, triggering scroll
+        ed.newline();
+        assert_eq!(ed.cursor().0, 10);
+        assert_eq!(ed.scroll_offset(), 1);
     }
 }
