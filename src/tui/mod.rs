@@ -1578,24 +1578,29 @@ impl App {
         let audio_device_indicator = match &self.audio_engine {
             Some(engine) => {
                 let name = engine.device_name();
-                let truncated: String = name.chars().take(20).collect();
-                Span::styled(
-                    format!(" {truncated} "),
-                    Style::default().fg(theme.diff_add),
-                )
+                let char_count = name.chars().count();
+                let label = if char_count > 12 {
+                    let mut t: String = name.chars().take(11).collect();
+                    t.push('\u{2026}'); // ellipsis
+                    t
+                } else {
+                    name.to_string()
+                };
+                Span::styled(format!(" {label} "), Style::default().fg(theme.diff_add))
             }
             None => Span::styled(" NO AUDIO ", Style::default().fg(theme.diff_remove)),
         };
 
+        // Only show MIDI/OSC indicators when connected (save status bar space)
         let midi_indicator = if self.midi_input.is_some() {
-            Span::styled(" MIDI ", Style::default().fg(theme.diff_add))
+            Span::styled(" MIDI", Style::default().fg(theme.diff_add))
         } else {
-            Span::styled(" MIDI ", Style::default().fg(theme.editor_line_number))
+            Span::raw("")
         };
         let osc_indicator = if self.osc_listener.is_some() {
-            Span::styled(" OSC ", Style::default().fg(theme.diff_add))
+            Span::styled(" OSC", Style::default().fg(theme.diff_add))
         } else {
-            Span::styled(" OSC ", Style::default().fg(theme.editor_line_number))
+            Span::raw("")
         };
 
         let line = Line::from(vec![
