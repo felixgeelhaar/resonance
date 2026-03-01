@@ -76,12 +76,17 @@ impl HelpScreen {
 
         lines.push(h("GLOBAL (all modes, all panels)"));
         lines.push(l("  Ctrl-Q       Quit"));
+        lines.push(l("  Ctrl-Enter   Evaluate code (REPL)"));
         lines.push(l("  Ctrl-R       Compile & reload DSL"));
         lines.push(l("  Ctrl-P       Toggle Edit/Perform mode"));
+        lines.push(l("  Ctrl-;       Open command bar"));
         lines.push(l("  Tab          Cycle panel focus"));
         lines.push(l("  Esc          Close overlay / return to editor"));
         lines.push(l("  ?            Toggle this help screen"));
+        lines.push(l("  Shift-?      DSL quick reference"));
         lines.push(l("  Ctrl-L       Toggle crash log"));
+        lines.push(l("  Ctrl-T       Cycle theme"));
+        lines.push(l("  Ctrl-D       Reconnect audio device"));
         lines.push(l(""));
 
         lines.push(h("EDIT MODE (editor panel focused)"));
@@ -104,14 +109,33 @@ impl HelpScreen {
         lines.push(l("  +/-          Grid zoom in/out"));
         lines.push(l(""));
 
+        lines.push(h("COMMAND BAR"));
+        lines.push(l("  :tutorial    Start interactive tutorial"));
+        lines.push(l("  :next/:prev  Navigate tutorial lessons"));
+        lines.push(l("  :preset NAME Load a preset (house/techno/ambient/dnb)"));
+        lines.push(l("  :presets     List available presets"));
+        lines.push(l("  :ref         DSL quick reference"));
+        lines.push(l("  :help        Toggle help screen"));
+        lines.push(l("  :eval        Evaluate code (same as Ctrl-Enter)"));
+        lines.push(l("  :audio       Reconnect audio device"));
+        lines.push(l("  :clear       Clear editor"));
+        lines.push(l("  (text)       Natural language command"));
+        lines.push(l(""));
+
         lines.push(h("DIFF PREVIEW"));
         lines.push(l("  Enter        Accept proposed changes"));
         lines.push(l("  Esc          Reject proposed changes"));
         lines.push(l("  Up/Down      Scroll preview"));
         lines.push(l(""));
 
+        lines.push(h("TUTORIAL (when active)"));
+        lines.push(l("  Ctrl-Right   Next lesson"));
+        lines.push(l("  Ctrl-Left    Previous lesson"));
+        lines.push(l(""));
+
         lines.push(h("TIPS"));
-        lines.push(l("  - Write DSL in Edit mode, perform in Perform mode"));
+        lines.push(l("  - Ctrl-Enter evaluates and auto-starts playback"));
+        lines.push(l("  - Use Ctrl-; then type 'add reverb' or 'faster'"));
         lines.push(l("  - Tab switches focus between panels"));
         lines.push(l("  - Keys only edit when Editor panel is focused"));
         lines.push(l("  - Compile with Ctrl-R to see grid visualization"));
@@ -167,7 +191,7 @@ mod tests {
     fn has_section_headers() {
         let help = HelpScreen::new();
         let headers: Vec<_> = help.lines().iter().filter(|l| l.is_header).collect();
-        assert!(headers.len() >= 4); // Global, Edit, Perform, Diff Preview
+        assert!(headers.len() >= 6); // Global, Edit, Perform, Command Bar, Diff Preview, Tutorial, Tips
     }
 
     #[test]

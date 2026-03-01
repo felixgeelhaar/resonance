@@ -7,6 +7,7 @@
 pub mod buffer;
 pub mod callback;
 pub mod command;
+pub mod effects;
 pub mod limiter;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -62,6 +63,7 @@ pub struct AudioEngine {
     producer: ringbuf::HeapProd<AudioCommand>,
     sample_rate: u32,
     channels: u16,
+    device_name: String,
 }
 
 impl AudioEngine {
@@ -94,12 +96,34 @@ impl AudioEngine {
         Self::build_with_device(&device, sample_rate, channels)
     }
 
+    /// Query the default audio output device without creating a stream.
+    ///
+    /// Returns `(device_name, sample_rate, channels)`.
+    pub fn default_device_info() -> Result<(String, u32, u16), AudioError> {
+        let host = cpal::default_host();
+        let device = host
+            .default_output_device()
+            .ok_or(AudioError::NoOutputDevice)?;
+        let name = device.name().unwrap_or_else(|_| "unknown".into());
+        let config = device
+            .default_output_config()
+            .map_err(|e| AudioError::DeviceConfig(e.to_string()))?;
+        Ok((name, config.sample_rate().0, config.channels()))
+    }
+
+    /// Get the name of the audio output device.
+    pub fn device_name(&self) -> &str {
+        &self.device_name
+    }
+
     /// Internal builder: sets up ring buffer, callback, and stream.
     fn build_with_device(
         device: &cpal::Device,
         sample_rate: u32,
         channels: u16,
     ) -> Result<Self, AudioError> {
+        let device_name = device.name().unwrap_or_else(|_| "unknown".into());
+
         let rb = HeapRb::<AudioCommand>::new(RING_BUFFER_CAPACITY);
         let (producer, consumer) = rb.split();
 
@@ -135,6 +159,7 @@ impl AudioEngine {
             producer,
             sample_rate,
             channels,
+            device_name,
         })
     }
 
@@ -158,6 +183,13 @@ impl AudioEngine {
     pub fn stop(&mut self) -> Result<(), AudioError> {
         self.producer
             .try_push(AudioCommand::Stop)
+            .map_err(|_| AudioError::BufferFull)
+    }
+
+    /// Set a master effect parameter by name (e.g. "reverb_mix", "delay_feedback").
+    pub fn send_effect_param(&mut self, name: String, value: f32) -> Result<(), AudioError> {
+        self.producer
+            .try_push(AudioCommand::SetEffectParam(name, value))
             .map_err(|_| AudioError::BufferFull)
     }
 
@@ -190,40 +222,43 @@ impl AudioEngine {
 mod tests {
     use super::*;
 
+    /// Try to create an audio engine; returns None if no device available (e.g. CI).
+    fn try_engine() -> Option<AudioEngine> {
+        AudioEngine::new().ok()
+    }
+
     #[test]
-    #[ignore] // Requires audio device — run manually with `cargo test -- --ignored`
     fn test_audio_engine_creation() {
-        let engine = AudioEngine::new();
-        assert!(
-            engine.is_ok(),
-            "AudioEngine::new() failed: {:?}",
-            engine.err()
-        );
-        let engine = engine.unwrap();
+        let Some(engine) = try_engine() else {
+            return; // No audio device available (CI/headless)
+        };
         assert!(engine.sample_rate() > 0);
         assert!(engine.channels() > 0);
     }
 
     #[test]
-    #[ignore] // Requires audio device
     fn test_send_samples() {
-        let mut engine = AudioEngine::new().expect("no audio device");
+        let Some(mut engine) = try_engine() else {
+            return;
+        };
         let result = engine.send_samples(vec![0.0; 1024]);
         assert!(result.is_ok());
     }
 
     #[test]
-    #[ignore] // Requires audio device
     fn test_set_volume_and_stop() {
-        let mut engine = AudioEngine::new().expect("no audio device");
+        let Some(mut engine) = try_engine() else {
+            return;
+        };
         assert!(engine.set_volume(0.5).is_ok());
         assert!(engine.stop().is_ok());
     }
 
     #[test]
-    #[ignore] // Requires audio device
     fn test_pause_and_play() {
-        let engine = AudioEngine::new().expect("no audio device");
+        let Some(engine) = try_engine() else {
+            return;
+        };
         assert!(engine.pause().is_ok());
         assert!(engine.play().is_ok());
     }
@@ -247,5 +282,23 @@ mod tests {
     #[test]
     fn test_ring_buffer_capacity() {
         assert_eq!(RING_BUFFER_CAPACITY, 1024);
+    }
+
+    #[test]
+    fn test_device_name_not_empty() {
+        let Some(engine) = try_engine() else {
+            return;
+        };
+        assert!(!engine.device_name().is_empty());
+    }
+
+    #[test]
+    fn test_default_device_info() {
+        let Ok((name, sample_rate, channels)) = AudioEngine::default_device_info() else {
+            return; // No audio device available (CI/headless)
+        };
+        assert!(!name.is_empty());
+        assert!(sample_rate > 0);
+        assert!(channels > 0);
     }
 }

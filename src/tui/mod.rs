@@ -2,8 +2,10 @@
 //!
 //! The App struct holds all TUI state and drives the event loop.
 
+pub mod command_bar;
 pub mod crash_log;
 pub mod diff_preview;
+pub mod dsl_reference;
 pub mod editor;
 pub mod external_input;
 pub mod first_run;
@@ -15,10 +17,14 @@ pub mod layers;
 pub mod layout;
 pub mod macros;
 pub mod status;
+pub mod theme;
 pub mod tracks;
+pub mod tutorial;
 
+pub use command_bar::CommandBar;
 pub use crash_log::CrashLog;
 pub use diff_preview::DiffPreview;
+pub use dsl_reference::DslReference;
 pub use editor::Editor;
 pub use grid::{project_events, GridCell, GridZoom, TrackGrid};
 pub use help::HelpScreen;
@@ -29,6 +35,7 @@ pub use layout::{AppMode, FocusPanel};
 pub use macros::MacroPanel;
 pub use status::{CompileStatus, StatusInfo};
 pub use tracks::TrackList;
+pub use tutorial::TutorialMode;
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -47,8 +54,8 @@ use crate::audio::AudioEngine;
 use crate::dsl::Compiler;
 use crate::event::types::ParamId;
 use crate::event::{Beat, EventScheduler, RenderFn};
-use crate::instrument::{build_default_kit, InstrumentRouter};
-use crate::intent::{IntentProcessor, PerformanceIntent};
+use crate::instrument::InstrumentRouter;
+use crate::intent::{IntentProcessor, PerformanceIntent, StructuralIntentProcessor};
 use crate::macro_engine::history::MacroHistory;
 use crate::macro_engine::{MacroEngine, Mapping};
 use crate::section::{Section, SectionController};
@@ -76,6 +83,12 @@ pub struct App {
     pub crash_log_visible: bool,
     pub macro_history: MacroHistory,
     pub grid_zoom: GridZoom,
+    pub command_bar: CommandBar,
+    pub tutorial: TutorialMode,
+    pub dsl_reference: DslReference,
+    pub structural_intent_processor: StructuralIntentProcessor,
+    #[cfg(feature = "llm")]
+    llm_client: Option<crate::ai::llm::LlmClient>,
     external_rx: external_input::ExternalInputReceiver,
     external_tx: external_input::ExternalInputSender,
     // Kept alive to maintain the MIDI connection; messages flow via external_rx.
@@ -85,11 +98,14 @@ pub struct App {
     #[allow(dead_code)]
     osc_listener: Option<crate::osc::OscListener>,
     last_tick: Option<Instant>,
+    last_device_check: Option<Instant>,
     audio_engine: Option<AudioEngine>,
     pub scheduler: Option<EventScheduler>,
     render_fn: Option<RenderFn>,
     dirty: bool,
     last_edit: Option<Instant>,
+    pub theme: theme::Theme,
+    available_themes: Vec<theme::Theme>,
 }
 
 impl App {
@@ -105,6 +121,9 @@ impl App {
         // Attempt OSC listener — only if config file exists
         let osc_listener = crate::osc::OscConfig::load()
             .and_then(|config| crate::osc::OscListener::start(&config, external_tx.clone()).ok());
+
+        let loaded_theme = theme::load_theme();
+        let available_themes = theme::builtin::all_builtins();
 
         Self {
             editor: Editor::new(source),
@@ -128,16 +147,26 @@ impl App {
             crash_log_visible: false,
             macro_history: MacroHistory::new(),
             grid_zoom: GridZoom::default(),
+            command_bar: CommandBar::default(),
+            tutorial: TutorialMode::default(),
+            dsl_reference: DslReference::default(),
+            structural_intent_processor: StructuralIntentProcessor::new(),
+            #[cfg(feature = "llm")]
+            llm_client: crate::ai::config::load_config()
+                .and_then(|c| crate::ai::llm::LlmClient::from_config(&c)),
             external_rx,
             external_tx,
             midi_input,
             osc_listener,
             last_tick: None,
+            last_device_check: None,
             audio_engine,
             scheduler: None,
             render_fn: None,
             dirty: false,
             last_edit: None,
+            theme: loaded_theme,
+            available_themes,
         }
     }
 
@@ -273,12 +302,18 @@ impl App {
                 }
             }
             Action::AcceptDiff => {
+                // Apply structural intent if pending
+                if let Some(proposed_source) = self.structural_intent_processor.accept_pending() {
+                    self.editor.set_content(&proposed_source);
+                    self.compile_source();
+                }
                 self.diff_preview.hide();
                 self.focus = FocusPanel::Editor;
                 self.intent_console
                     .log("diff accepted", self.current_beat.as_beats_f64());
             }
             Action::RejectDiff => {
+                self.structural_intent_processor.reject_pending();
                 self.diff_preview.hide();
                 self.focus = FocusPanel::Editor;
                 self.intent_console
@@ -327,6 +362,10 @@ impl App {
                     self.crash_log_visible = false;
                 } else if self.help_screen.visible {
                     self.help_screen.hide();
+                } else if self.dsl_reference.visible {
+                    self.dsl_reference.hide();
+                } else if self.tutorial.active && self.tutorial.explanation_visible {
+                    self.tutorial.toggle_explanation();
                 } else if self.focus != FocusPanel::Editor {
                     self.focus = FocusPanel::Editor;
                 }
@@ -337,9 +376,77 @@ impl App {
             Action::GridZoomOut => {
                 self.grid_zoom = self.grid_zoom.zoom_out();
             }
+            Action::CycleTheme => {
+                self.theme = theme::cycle_theme(&self.theme, &self.available_themes);
+                self.intent_console.log(
+                    format!("theme: {}", self.theme.name),
+                    self.current_beat.as_beats_f64(),
+                );
+            }
             Action::PanelNavigate(_key_code) => {
                 // Panel-specific navigation — currently a no-op for content scrolling.
                 // Future: scroll track list, grid cursor, etc.
+            }
+            Action::EvalImmediate => self.eval_immediate(),
+            Action::ActivateCommandBar => {
+                self.command_bar.activate();
+            }
+            Action::CommandBarInsert(c) => {
+                self.command_bar.insert_char(c);
+            }
+            Action::CommandBarSubmit => {
+                let input = self.command_bar.submit();
+                if !input.is_empty() {
+                    self.process_command(&input);
+                }
+            }
+            Action::CommandBarCancel => {
+                self.command_bar.deactivate();
+            }
+            Action::CommandBarBackspace => {
+                self.command_bar.backspace();
+            }
+            Action::CommandBarLeft => {
+                self.command_bar.move_left();
+            }
+            Action::CommandBarRight => {
+                self.command_bar.move_right();
+            }
+            Action::CommandBarHistoryUp => {
+                self.command_bar.history_up();
+            }
+            Action::CommandBarHistoryDown => {
+                self.command_bar.history_down();
+            }
+            Action::TutorialNext => {
+                if self.tutorial.next_lesson() {
+                    if let Some(lesson) = self.tutorial.current_lesson() {
+                        let code = lesson.code.trim().to_string();
+                        self.editor.set_content(&code);
+                    }
+                    self.intent_console.log(
+                        format!(
+                            "tutorial: lesson {}/{}",
+                            self.tutorial.current_index() + 1,
+                            self.tutorial.total_lessons()
+                        ),
+                        self.current_beat.as_beats_f64(),
+                    );
+                }
+            }
+            Action::TutorialPrev => {
+                if self.tutorial.prev_lesson() {
+                    if let Some(lesson) = self.tutorial.current_lesson() {
+                        let code = lesson.code.trim().to_string();
+                        self.editor.set_content(&code);
+                    }
+                }
+            }
+            Action::ToggleDslReference => {
+                self.dsl_reference.toggle();
+            }
+            Action::ReconnectAudio => {
+                self.reconnect_audio_device();
             }
         }
     }
@@ -365,6 +472,17 @@ impl App {
                 {
                     if let Some(ref mut engine) = self.audio_engine {
                         let _ = engine.send_samples(samples);
+
+                        // Send resolved FX params to audio engine
+                        let resolved = macro_engine.resolve_params();
+                        for param_name in
+                            &["reverb_mix", "reverb_decay", "delay_mix", "delay_feedback"]
+                        {
+                            let key = ParamId(param_name.to_string());
+                            if let Some(&val) = resolved.get(&key) {
+                                let _ = engine.send_effect_param(param_name.to_string(), val);
+                            }
+                        }
                     }
 
                     let pos = scheduler.transport().position();
@@ -496,8 +614,11 @@ impl App {
                     Some(engine) => (engine.sample_rate(), engine.channels()),
                     None => (44100, 2),
                 };
-                let bank = build_default_kit(sample_rate, seed);
-                let router = InstrumentRouter::from_track_defs(&song.track_defs, bank, seed);
+                let router = InstrumentRouter::from_track_defs_with_kits(
+                    &song.track_defs,
+                    sample_rate,
+                    seed,
+                );
                 let mut scheduler =
                     EventScheduler::new(song.tempo, sample_rate, channels, 1024, seed);
                 scheduler.timeline_mut().insert_batch(song.events.clone());
@@ -535,18 +656,368 @@ impl App {
         self.layer_panel.update(&layer_states);
     }
 
+    /// Reconnect to the default audio output device.
+    ///
+    /// Drops the current engine, creates a new one on the default device,
+    /// and re-compiles if the sample rate or channel count changed.
+    fn reconnect_audio_device(&mut self) {
+        let old_config = self
+            .audio_engine
+            .as_ref()
+            .map(|e| (e.sample_rate(), e.channels()));
+
+        // Drop old engine
+        self.audio_engine = None;
+
+        match AudioEngine::new() {
+            Ok(engine) => {
+                let name = engine.device_name().to_string();
+                let sr = engine.sample_rate();
+                let ch = engine.channels();
+
+                self.audio_engine = Some(engine);
+
+                self.intent_console.log(
+                    format!("audio: reconnected to '{name}' ({sr}Hz, {ch}ch)"),
+                    self.current_beat.as_beats_f64(),
+                );
+
+                // Re-compile if audio config changed
+                if old_config.is_some_and(|(osr, och)| osr != sr || och != ch) {
+                    self.compile_source();
+                }
+
+                // Resume playback if we were playing
+                if self.is_playing {
+                    if let Some(ref engine) = self.audio_engine {
+                        let _ = engine.play();
+                    }
+                }
+            }
+            Err(e) => {
+                let msg = format!("audio: reconnect failed — {e}");
+                self.crash_log.push(msg.clone());
+                self.intent_console
+                    .log(msg, self.current_beat.as_beats_f64());
+            }
+        }
+    }
+
+    /// Best-effort auto-detection of audio device changes.
+    ///
+    /// Polls the default device every 2 seconds and reconnects if the
+    /// device name, sample rate, or channel count changed.
+    /// Note: built-in headphone jack may share name+config with speakers,
+    /// so `Ctrl+D` remains the fallback for that case.
+    fn check_audio_device(&mut self) {
+        let now = Instant::now();
+        if let Some(last) = self.last_device_check {
+            if now.duration_since(last) < Duration::from_secs(2) {
+                return;
+            }
+        }
+        self.last_device_check = Some(now);
+
+        let current = self
+            .audio_engine
+            .as_ref()
+            .map(|e| (e.device_name().to_string(), e.sample_rate(), e.channels()));
+
+        if let Ok((name, sr, ch)) = AudioEngine::default_device_info() {
+            if let Some((cur_name, cur_sr, cur_ch)) = current {
+                if name != cur_name || sr != cur_sr || ch != cur_ch {
+                    self.reconnect_audio_device();
+                }
+            }
+        }
+    }
+
+    /// Evaluate code immediately (REPL mode). Compiles and auto-starts playback.
+    fn eval_immediate(&mut self) {
+        self.compile_source();
+        self.dirty = false;
+        self.last_edit = None;
+        if !self.is_playing && self.status.compile_status == CompileStatus::Ok {
+            self.handle_action(Action::TogglePlayback);
+        }
+    }
+
+    /// Process a command from the command bar.
+    fn process_command(&mut self, input: &str) {
+        let trimmed = input.trim();
+
+        // : commands
+        if let Some(cmd) = trimmed.strip_prefix(':') {
+            let cmd = cmd.trim();
+            match cmd {
+                "tutorial" | "learn" => {
+                    self.tutorial.start();
+                    if let Some(lesson) = self.tutorial.current_lesson() {
+                        let code = lesson.code.trim().to_string();
+                        self.editor.set_content(&code);
+                    }
+                    self.intent_console
+                        .log("tutorial: started", self.current_beat.as_beats_f64());
+                }
+                "next" => {
+                    self.handle_action(Action::TutorialNext);
+                }
+                "prev" => {
+                    self.handle_action(Action::TutorialPrev);
+                }
+                "ref" | "reference" => {
+                    self.dsl_reference.toggle();
+                }
+                "help" => {
+                    self.help_screen.toggle();
+                }
+                "eval" => {
+                    self.eval_immediate();
+                }
+                "clear" => {
+                    self.editor.set_content("");
+                    self.intent_console
+                        .log("editor cleared", self.current_beat.as_beats_f64());
+                }
+                "audio" | "reconnect" => {
+                    self.reconnect_audio_device();
+                }
+                "presets" => {
+                    let presets = crate::content::presets::list_presets();
+                    for p in &presets {
+                        self.intent_console.log(
+                            format!("preset: {} — {}", p.name, p.description),
+                            self.current_beat.as_beats_f64(),
+                        );
+                    }
+                }
+                "themes" => {
+                    for t in &self.available_themes {
+                        self.intent_console.log(
+                            format!("theme: {}", t.name),
+                            self.current_beat.as_beats_f64(),
+                        );
+                    }
+                }
+                _ if cmd.starts_with("preset ") => {
+                    let name = cmd.strip_prefix("preset ").unwrap().trim();
+                    if let Some(source) = crate::content::presets::load_preset(name) {
+                        self.editor.set_content(&source);
+                        self.compile_source();
+                        self.intent_console.log(
+                            format!("loaded preset: {name}"),
+                            self.current_beat.as_beats_f64(),
+                        );
+                    } else {
+                        self.intent_console.log(
+                            format!("preset not found: {name}"),
+                            self.current_beat.as_beats_f64(),
+                        );
+                    }
+                }
+                _ if cmd.starts_with("theme ") => {
+                    let name = cmd.strip_prefix("theme ").unwrap().trim();
+                    if let Some(t) = self
+                        .available_themes
+                        .iter()
+                        .find(|t| t.name.to_lowercase() == name.to_lowercase())
+                    {
+                        self.theme = t.clone();
+                        self.intent_console.log(
+                            format!("theme: {}", self.theme.name),
+                            self.current_beat.as_beats_f64(),
+                        );
+                    } else {
+                        self.intent_console.log(
+                            format!("theme not found: {name}"),
+                            self.current_beat.as_beats_f64(),
+                        );
+                    }
+                }
+                _ if cmd.starts_with("save ") => {
+                    let path = cmd.strip_prefix("save ").unwrap().trim();
+                    match std::fs::write(path, self.editor.content()) {
+                        Ok(()) => {
+                            self.intent_console
+                                .log(format!("saved to {path}"), self.current_beat.as_beats_f64());
+                        }
+                        Err(e) => {
+                            self.intent_console
+                                .log(format!("save error: {e}"), self.current_beat.as_beats_f64());
+                        }
+                    }
+                }
+                _ if cmd.starts_with("load ") => {
+                    let path = cmd.strip_prefix("load ").unwrap().trim();
+                    match std::fs::read_to_string(path) {
+                        Ok(content) => {
+                            self.editor.set_content(&content);
+                            self.compile_source();
+                            self.intent_console
+                                .log(format!("loaded {path}"), self.current_beat.as_beats_f64());
+                        }
+                        Err(e) => {
+                            self.intent_console
+                                .log(format!("load error: {e}"), self.current_beat.as_beats_f64());
+                        }
+                    }
+                }
+                _ => {
+                    self.intent_console.log(
+                        format!("unknown command: :{cmd}"),
+                        self.current_beat.as_beats_f64(),
+                    );
+                }
+            }
+            return;
+        }
+
+        // Natural language input
+        let nl_cmd = crate::ai::nl_parser::parse(trimmed, &self.editor.content());
+        match nl_cmd {
+            crate::ai::nl_parser::NlCommand::SetTempo(bpm) => {
+                self.status.bpm = bpm.clamp(20.0, 999.0);
+                self.intent_console.log(
+                    format!("tempo: {:.0}", self.status.bpm),
+                    self.current_beat.as_beats_f64(),
+                );
+            }
+            crate::ai::nl_parser::NlCommand::AdjustTempo(delta) => {
+                // Handle half time / double time special cases
+                if delta == -0.5 {
+                    self.status.bpm = (self.status.bpm * 0.5).clamp(20.0, 999.0);
+                } else if delta == 2.0 {
+                    self.status.bpm = (self.status.bpm * 2.0).clamp(20.0, 999.0);
+                } else {
+                    self.status.bpm = (self.status.bpm + delta).clamp(20.0, 999.0);
+                }
+                self.intent_console.log(
+                    format!("tempo: {:.0}", self.status.bpm),
+                    self.current_beat.as_beats_f64(),
+                );
+            }
+            crate::ai::nl_parser::NlCommand::AdjustMacro { name, delta } => {
+                self.macro_engine.adjust_macro(&name, delta);
+                self.macro_panel.update(self.macro_engine.macros());
+                self.intent_console.log(
+                    format!("adjust {name} {delta:+.2}"),
+                    self.current_beat.as_beats_f64(),
+                );
+            }
+            crate::ai::nl_parser::NlCommand::TogglePlayback => {
+                self.handle_action(Action::TogglePlayback);
+            }
+            crate::ai::nl_parser::NlCommand::ModifyDsl(proposed_source) => {
+                // Structural change — show diff preview
+                let current_source = self.editor.content();
+                if let (Ok(old_ast), Ok(new_ast)) = (
+                    Compiler::parse(&current_source),
+                    Compiler::parse(&proposed_source),
+                ) {
+                    let diff = crate::dsl::diff::AstDiff::diff(&old_ast, &new_ast);
+                    let diff_lines: Vec<diff_preview::DiffLine> = diff
+                        .changes
+                        .iter()
+                        .map(|change| {
+                            let text = format!("{change:?}");
+                            diff_preview::DiffLine {
+                                text,
+                                kind: diff_preview::DiffLineKind::Modification,
+                            }
+                        })
+                        .collect();
+
+                    if diff_lines.is_empty() {
+                        self.intent_console
+                            .log("no changes detected", self.current_beat.as_beats_f64());
+                    } else {
+                        let _id = self.structural_intent_processor.propose(
+                            trimmed.to_string(),
+                            diff,
+                            proposed_source,
+                        );
+                        self.diff_preview.show(diff_lines);
+                        self.intent_console.log(
+                            "proposed change — Enter/Esc",
+                            self.current_beat.as_beats_f64(),
+                        );
+                    }
+                } else {
+                    // Fallback: apply directly if parse fails for diff
+                    self.editor.set_content(&proposed_source);
+                    self.compile_source();
+                    self.intent_console
+                        .log("applied change", self.current_beat.as_beats_f64());
+                }
+            }
+            crate::ai::nl_parser::NlCommand::LoadPreset(name) => {
+                self.process_command(&format!(":preset {name}"));
+            }
+            crate::ai::nl_parser::NlCommand::StartTutorial => {
+                self.process_command(":tutorial");
+            }
+            crate::ai::nl_parser::NlCommand::ShowHelp => {
+                self.help_screen.toggle();
+            }
+            crate::ai::nl_parser::NlCommand::ShowReference => {
+                self.dsl_reference.toggle();
+            }
+            crate::ai::nl_parser::NlCommand::Unknown(text) => {
+                #[cfg(feature = "llm")]
+                {
+                    if self.llm_client.is_some() {
+                        self.intent_console
+                            .log("AI thinking...", self.current_beat.as_beats_f64());
+                        let source = self.editor.content();
+                        let input = text.clone();
+                        let tx = self.external_tx.clone();
+                        std::thread::spawn(move || {
+                            // Re-load config and create client in thread
+                            if let Some(config) = crate::ai::config::load_config() {
+                                if let Some(client) =
+                                    crate::ai::llm::LlmClient::from_config(&config)
+                                {
+                                    match client.transform(&input, &source) {
+                                        Ok(proposed) => {
+                                            let _ = tx.send(
+                                                external_input::ExternalEvent::AiResponse {
+                                                    input,
+                                                    proposed_source: proposed,
+                                                },
+                                            );
+                                        }
+                                        Err(e) => {
+                                            eprintln!("LLM error: {e}");
+                                        }
+                                    }
+                                }
+                            }
+                        });
+                        return;
+                    }
+                }
+                self.intent_console
+                    .log(format!("unknown: {text}"), self.current_beat.as_beats_f64());
+            }
+        }
+    }
+
     /// Draw the UI.
     pub fn draw(&mut self, frame: &mut Frame) {
         let size = frame.area();
+
+        // Determine if command bar is visible (needs extra row)
+        let cmd_bar_height = if self.command_bar.active { 1 } else { 0 };
 
         // Main vertical layout
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(40), // Editor + Tracks
-                Constraint::Percentage(30), // Grid
-                Constraint::Percentage(20), // Macros + Intent Console
-                Constraint::Length(1),      // Status bar
+                Constraint::Percentage(40),         // Editor + Tracks
+                Constraint::Percentage(30),         // Grid
+                Constraint::Percentage(20),         // Macros + Intent Console
+                Constraint::Length(cmd_bar_height), // Command bar (conditional)
+                Constraint::Length(1),              // Status bar
             ])
             .split(size);
 
@@ -571,17 +1042,29 @@ impl App {
         self.draw_macros(frame, bottom[0]);
         self.draw_intent_console(frame, bottom[1]);
 
-        // Status bar
-        self.draw_status(frame, chunks[3]);
+        // Command bar (conditional)
+        if self.command_bar.active {
+            self.draw_command_bar(frame, chunks[3]);
+        }
 
-        // Diff preview overlay (rendered last, on top)
+        // Status bar
+        self.draw_status(frame, chunks[4]);
+
+        // Overlay priority: help > dsl_reference > tutorial > crash_log > diff_preview
         if self.diff_preview.visible {
             self.draw_diff_preview(frame, size);
         }
 
-        // Crash log overlay
         if self.crash_log_visible {
             self.draw_crash_log(frame, size);
+        }
+
+        if self.tutorial.active && self.tutorial.explanation_visible {
+            self.draw_tutorial_explanation(frame, size);
+        }
+
+        if self.dsl_reference.visible {
+            self.draw_dsl_reference(frame, size);
         }
 
         // Help overlay (rendered on top of everything)
@@ -593,9 +1076,9 @@ impl App {
     fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Editor;
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(self.theme.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(self.theme.border)
         };
 
         // Compute inner height (subtract 2 for top+bottom borders)
@@ -603,6 +1086,7 @@ impl App {
         self.editor.set_viewport_height(inner_height);
         let scroll_offset = self.editor.scroll_offset();
 
+        let line_num_color = self.theme.editor_line_number;
         let lines: Vec<Line> = self
             .editor
             .lines()
@@ -611,10 +1095,8 @@ impl App {
             .skip(scroll_offset)
             .take(inner_height)
             .map(|(i, line)| {
-                let num = Span::styled(
-                    format!("{:3} ", i + 1),
-                    Style::default().fg(Color::DarkGray),
-                );
+                let num =
+                    Span::styled(format!("{:3} ", i + 1), Style::default().fg(line_num_color));
                 let content = Span::raw(line.as_str());
                 Line::from(vec![num, content])
             })
@@ -650,9 +1132,9 @@ impl App {
     fn draw_tracks(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Tracks;
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(self.theme.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(self.theme.border)
         };
 
         let items: Vec<ListItem> = self
@@ -683,9 +1165,9 @@ impl App {
     fn draw_grid(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Grid;
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(self.theme.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(self.theme.border)
         };
 
         let zoom_label = self.grid_zoom.label();
@@ -708,19 +1190,25 @@ impl App {
         let steps_per_bar = self.grid_zoom.steps_per_bar();
         let grids = grid::project_events(&self.compiled_events, 2, steps_per_bar, cursor);
 
+        let theme = &self.theme;
         let lines: Vec<Line> = grids
             .iter()
             .map(|tg| {
-                let tc = grid::track_color(&tg.track_name);
+                let tc = grid::track_color(&tg.track_name, &theme.grid_palette);
                 let mut spans = vec![Span::styled(
                     format!("{:>8} ", tg.track_name),
                     Style::default().fg(tc),
                 )];
                 for cell in &tg.cells {
                     let (text, color) = match cell {
-                        GridCell::Empty => (".", Color::DarkGray),
+                        GridCell::Empty => (".", theme.grid_empty),
                         GridCell::Hit(v) => {
-                            let c = grid::velocity_color(*v, tc);
+                            let c = grid::velocity_color(
+                                *v,
+                                tc,
+                                theme.grid_hit_bright,
+                                theme.grid_hit_dim,
+                            );
                             if *v > 0.6 {
                                 ("X", c)
                             } else {
@@ -728,7 +1216,7 @@ impl App {
                             }
                         }
                         GridCell::Note(_) => ("N", tc),
-                        GridCell::Cursor => ("|", Color::Green),
+                        GridCell::Cursor => ("|", theme.grid_playhead),
                     };
                     spans.push(Span::styled(format!("{text} "), Style::default().fg(color)));
                 }
@@ -743,9 +1231,9 @@ impl App {
     fn draw_macros(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Macros;
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(self.theme.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(self.theme.border)
         };
 
         let block = Block::default()
@@ -771,7 +1259,7 @@ impl App {
                 let gauge = Gauge::default()
                     .label(format!("{}: {:.0}%", meter.name, meter.value * 100.0))
                     .ratio(meter.value.clamp(0.0, 1.0))
-                    .gauge_style(Style::default().fg(Color::Green));
+                    .gauge_style(Style::default().fg(self.theme.macro_bar));
                 frame.render_widget(gauge, gauge_area);
             }
         }
@@ -780,9 +1268,9 @@ impl App {
     fn draw_intent_console(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::IntentConsole;
         let border_style = if focused {
-            Style::default().fg(Color::Cyan)
+            Style::default().fg(self.theme.border_focused)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default().fg(self.theme.border)
         };
 
         let items: Vec<ListItem> = self
@@ -817,7 +1305,7 @@ impl App {
         let clear = Block::default()
             .style(Style::default().bg(Color::Black))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow))
+            .border_style(Style::default().fg(self.theme.title))
             .title(" Diff Preview ");
         let inner = clear.inner(overlay);
         frame.render_widget(clear, overlay);
@@ -825,15 +1313,16 @@ impl App {
         // Render visible lines
         let max_lines = inner.height as usize;
         let visible = self.diff_preview.visible_lines(max_lines);
+        let theme = &self.theme;
         let lines: Vec<Line> = visible
             .iter()
             .map(|dl| {
                 let color = match dl.kind {
-                    DiffLineKind::Header => Color::Yellow,
-                    DiffLineKind::Addition => Color::Green,
-                    DiffLineKind::Removal => Color::Red,
-                    DiffLineKind::Modification => Color::Cyan,
-                    DiffLineKind::Context => Color::DarkGray,
+                    DiffLineKind::Header => theme.title,
+                    DiffLineKind::Addition => theme.diff_add,
+                    DiffLineKind::Removal => theme.diff_remove,
+                    DiffLineKind::Modification => theme.border_focused,
+                    DiffLineKind::Context => theme.editor_line_number,
                 };
                 Line::from(Span::styled(&dl.text, Style::default().fg(color)))
             })
@@ -853,7 +1342,7 @@ impl App {
         let block = Block::default()
             .style(Style::default().bg(Color::Black))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(self.theme.border_focused))
             .title(" Help — Press ? or Esc to close ");
         let inner = block.inner(overlay);
         frame.render_widget(block, overlay);
@@ -866,9 +1355,9 @@ impl App {
             .take(inner.height as usize)
             .map(|hl| {
                 let color = if hl.is_header {
-                    Color::Yellow
+                    self.theme.help_key
                 } else {
-                    Color::White
+                    self.theme.help_desc
                 };
                 Line::from(Span::styled(&hl.text, Style::default().fg(color)))
             })
@@ -888,16 +1377,17 @@ impl App {
         let block = Block::default()
             .style(Style::default().bg(Color::Black))
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Red))
+            .border_style(Style::default().fg(self.theme.diff_remove))
             .title(" Crash Log — Press Ctrl-L or Esc to close ");
         let inner = block.inner(overlay);
         frame.render_widget(block, overlay);
 
         if self.crash_log.is_empty() {
-            let paragraph =
-                Paragraph::new("(no errors recorded)").style(Style::default().fg(Color::DarkGray));
+            let paragraph = Paragraph::new("(no errors recorded)")
+                .style(Style::default().fg(self.theme.editor_line_number));
             frame.render_widget(paragraph, inner);
         } else {
+            let theme = &self.theme;
             let lines: Vec<Line> = self
                 .crash_log
                 .entries()
@@ -910,9 +1400,9 @@ impl App {
                     Line::from(vec![
                         Span::styled(
                             format!("[{elapsed}] "),
-                            Style::default().fg(Color::DarkGray),
+                            Style::default().fg(theme.editor_line_number),
                         ),
-                        Span::styled(&entry.message, Style::default().fg(Color::Red)),
+                        Span::styled(&entry.message, Style::default().fg(theme.diff_remove)),
                     ])
                 })
                 .collect();
@@ -921,20 +1411,152 @@ impl App {
         }
     }
 
+    fn draw_command_bar(&self, frame: &mut Frame, area: Rect) {
+        let theme = &self.theme;
+        let input = self.command_bar.input();
+        let line = Line::from(vec![
+            Span::styled(
+                " > ",
+                Style::default()
+                    .fg(theme.border_focused)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(input),
+        ]);
+        let paragraph =
+            Paragraph::new(line).style(Style::default().bg(theme.status_bg).fg(theme.status_fg));
+        frame.render_widget(paragraph, area);
+
+        // Show cursor in command bar
+        let x = area.x + 3 + self.command_bar.cursor_pos() as u16;
+        let y = area.y;
+        if x < area.x + area.width {
+            frame.set_cursor_position((x, y));
+        }
+    }
+
+    fn draw_tutorial_explanation(&self, frame: &mut Frame, area: Rect) {
+        let width = (area.width * 60 / 100).max(40);
+        let height = (area.height * 50 / 100).max(10);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let overlay = Rect::new(x, y, width, height);
+
+        let lesson_info = if let Some(lesson) = self.tutorial.current_lesson() {
+            format!(
+                " Tutorial: {} ({}/{}) — Esc to dismiss ",
+                lesson.title,
+                self.tutorial.current_index() + 1,
+                self.tutorial.total_lessons()
+            )
+        } else {
+            " Tutorial ".to_string()
+        };
+
+        let block = Block::default()
+            .style(Style::default().bg(Color::Black))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_focused))
+            .title(lesson_info);
+        let inner = block.inner(overlay);
+        frame.render_widget(block, overlay);
+
+        if let Some(lesson) = self.tutorial.current_lesson() {
+            let theme = &self.theme;
+            let mut all_lines: Vec<Line> = Vec::new();
+
+            for text in &lesson.explanation {
+                all_lines.push(Line::from(Span::styled(
+                    text.as_str(),
+                    Style::default().fg(theme.help_desc),
+                )));
+            }
+
+            if !lesson.hints.is_empty() {
+                all_lines.push(Line::from(""));
+                all_lines.push(Line::from(Span::styled(
+                    "Hints:",
+                    Style::default()
+                        .fg(theme.help_key)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                for hint in &lesson.hints {
+                    all_lines.push(Line::from(Span::styled(
+                        format!("  - {hint}"),
+                        Style::default().fg(theme.editor_line_number),
+                    )));
+                }
+            }
+
+            let visible: Vec<Line> = all_lines
+                .into_iter()
+                .skip(self.tutorial.scroll_offset)
+                .take(inner.height as usize)
+                .collect();
+
+            let paragraph = Paragraph::new(visible);
+            frame.render_widget(paragraph, inner);
+        }
+    }
+
+    fn draw_dsl_reference(&self, frame: &mut Frame, area: Rect) {
+        let width = (area.width * 70 / 100).max(50);
+        let height = (area.height * 70 / 100).max(15);
+        let x = area.x + (area.width.saturating_sub(width)) / 2;
+        let y = area.y + (area.height.saturating_sub(height)) / 2;
+        let overlay = Rect::new(x, y, width, height);
+
+        let block = Block::default()
+            .style(Style::default().bg(Color::Black))
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.border_focused))
+            .title(" DSL Reference — Shift+? or Esc to close ");
+        let inner = block.inner(overlay);
+        frame.render_widget(block, overlay);
+
+        let lines: Vec<Line> = self
+            .dsl_reference
+            .lines()
+            .iter()
+            .skip(self.dsl_reference.scroll_offset)
+            .take(inner.height as usize)
+            .map(|hl| {
+                let color = if hl.is_header {
+                    self.theme.help_key
+                } else {
+                    self.theme.help_desc
+                };
+                Line::from(Span::styled(&hl.text, Style::default().fg(color)))
+            })
+            .collect();
+
+        let paragraph = Paragraph::new(lines);
+        frame.render_widget(paragraph, inner);
+    }
+
     /// Context-sensitive hint for the status bar.
     pub fn context_hint(&self) -> &str {
+        if self.command_bar.active {
+            return "> type command or natural language | Esc:cancel";
+        }
         if self.crash_log_visible {
             return "Ctrl-L/Esc:close crash log";
         }
         if self.help_screen.visible {
             return "?/Esc:close help  Up/Down:scroll";
         }
+        if self.dsl_reference.visible {
+            return "Shift-?/Esc:close reference  Up/Down:scroll";
+        }
+        if self.tutorial.active && self.tutorial.explanation_visible {
+            return "Esc:dismiss  Ctrl-Right:next  Ctrl-Left:prev";
+        }
         if self.diff_preview.visible {
             return "Enter:accept  Esc:reject  Up/Down:scroll";
         }
         match self.mode {
             AppMode::Edit => match self.focus {
-                FocusPanel::Editor => "Type to edit | Tab:focus Ctrl-R:compile Ctrl-P:mode ?:help",
+                FocusPanel::Editor => "Ctrl+Enter:eval | Ctrl+;:command | Tab:focus | ?:help",
                 _ => "Tab:focus  Esc:back to editor  Ctrl-R:compile  ?:help",
             },
             AppMode::Perform => "Space:play 1-9:section Shift+1-9:layer F1-F8:macro ?:help",
@@ -942,21 +1564,38 @@ impl App {
     }
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
+        let theme = &self.theme;
         let compile_indicator = match &self.status.compile_status {
-            CompileStatus::Ok => Span::styled(" OK ", Style::default().fg(Color::Green)),
-            CompileStatus::Error(_) => Span::styled(" ERR ", Style::default().fg(Color::Red)),
-            CompileStatus::Idle => Span::styled(" -- ", Style::default().fg(Color::DarkGray)),
+            CompileStatus::Ok => Span::styled(" OK ", Style::default().fg(theme.diff_add)),
+            CompileStatus::Error(_) => {
+                Span::styled(" ERR ", Style::default().fg(theme.diff_remove))
+            }
+            CompileStatus::Idle => {
+                Span::styled(" -- ", Style::default().fg(theme.editor_line_number))
+            }
+        };
+
+        let audio_device_indicator = match &self.audio_engine {
+            Some(engine) => {
+                let name = engine.device_name();
+                let truncated: String = name.chars().take(20).collect();
+                Span::styled(
+                    format!(" {truncated} "),
+                    Style::default().fg(theme.diff_add),
+                )
+            }
+            None => Span::styled(" NO AUDIO ", Style::default().fg(theme.diff_remove)),
         };
 
         let midi_indicator = if self.midi_input.is_some() {
-            Span::styled(" MIDI ", Style::default().fg(Color::Green))
+            Span::styled(" MIDI ", Style::default().fg(theme.diff_add))
         } else {
-            Span::styled(" MIDI ", Style::default().fg(Color::DarkGray))
+            Span::styled(" MIDI ", Style::default().fg(theme.editor_line_number))
         };
         let osc_indicator = if self.osc_listener.is_some() {
-            Span::styled(" OSC ", Style::default().fg(Color::Green))
+            Span::styled(" OSC ", Style::default().fg(theme.diff_add))
         } else {
-            Span::styled(" OSC ", Style::default().fg(Color::DarkGray))
+            Span::styled(" OSC ", Style::default().fg(theme.editor_line_number))
         };
 
         let line = Line::from(vec![
@@ -964,9 +1603,9 @@ impl App {
                 format!(" {} ", self.status.playback_display()),
                 Style::default()
                     .fg(if self.status.is_playing {
-                        Color::Green
+                        theme.diff_add
                     } else {
-                        Color::Red
+                        theme.diff_remove
                     })
                     .add_modifier(Modifier::BOLD),
             ),
@@ -978,16 +1617,17 @@ impl App {
                 self.grid_zoom.label(),
             )),
             compile_indicator,
+            audio_device_indicator,
             midi_indicator,
             osc_indicator,
             Span::styled(
                 format!(" {} ", self.context_hint()),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(theme.editor_line_number),
             ),
         ]);
 
         let paragraph =
-            Paragraph::new(line).style(Style::default().bg(Color::DarkGray).fg(Color::White));
+            Paragraph::new(line).style(Style::default().bg(theme.status_bg).fg(theme.status_fg));
         frame.render_widget(paragraph, area);
     }
 
@@ -1025,6 +1665,45 @@ impl App {
                 external_input::ExternalEvent::PlayStop => {
                     self.handle_action(Action::TogglePlayback);
                 }
+                external_input::ExternalEvent::AiResponse {
+                    input,
+                    proposed_source,
+                } => {
+                    // AI suggested a DSL modification — show as structural intent
+                    let current_source = self.editor.content();
+                    if let (Ok(old_ast), Ok(new_ast)) = (
+                        Compiler::parse(&current_source),
+                        Compiler::parse(&proposed_source),
+                    ) {
+                        let diff = crate::dsl::diff::AstDiff::diff(&old_ast, &new_ast);
+                        let diff_lines: Vec<diff_preview::DiffLine> = diff
+                            .changes
+                            .iter()
+                            .map(|change| diff_preview::DiffLine {
+                                text: format!("{change:?}"),
+                                kind: diff_preview::DiffLineKind::Modification,
+                            })
+                            .collect();
+
+                        if !diff_lines.is_empty() {
+                            self.structural_intent_processor
+                                .propose(input, diff, proposed_source);
+                            self.diff_preview.show(diff_lines);
+                            self.intent_console.log(
+                                "AI proposed change — Enter/Esc",
+                                self.current_beat.as_beats_f64(),
+                            );
+                        } else {
+                            self.intent_console
+                                .log("AI: no changes detected", self.current_beat.as_beats_f64());
+                        }
+                    } else {
+                        self.intent_console.log(
+                            "AI response failed to parse",
+                            self.current_beat.as_beats_f64(),
+                        );
+                    }
+                }
                 external_input::ExternalEvent::NoteOn { .. }
                 | external_input::ExternalEvent::NoteOff { .. }
                 | external_input::ExternalEvent::CC { .. } => {
@@ -1050,9 +1729,16 @@ impl App {
                     if key.kind == KeyEventKind::Press {
                         let is_edit = self.mode == AppMode::Edit;
                         let diff_visible = self.diff_preview.visible;
-                        if let Some(action) =
-                            keybindings::map_key_with_diff(key, is_edit, diff_visible, self.focus)
-                        {
+                        let cmd_bar_active = self.command_bar.active;
+                        let tutorial_active = self.tutorial.active;
+                        if let Some(action) = keybindings::map_key_full(
+                            key,
+                            is_edit,
+                            diff_visible,
+                            self.focus,
+                            cmd_bar_active,
+                            tutorial_active,
+                        ) {
                             self.handle_action(action);
                         }
                     }
@@ -1072,6 +1758,9 @@ impl App {
 
             // Process external input (MIDI, OSC, etc.)
             self.process_external_events();
+
+            // Check for audio device changes (best-effort, every 2s)
+            self.check_audio_device();
 
             // Advance beat when playing
             self.advance_beat();
@@ -1371,7 +2060,7 @@ mod tests {
         let mut app = App::new("");
         app.mode = AppMode::Edit;
         app.focus = FocusPanel::Editor;
-        assert!(app.context_hint().contains("Type to edit"));
+        assert!(app.context_hint().contains("Ctrl+Enter"));
 
         app.mode = AppMode::Perform;
         assert!(app.context_hint().contains("Space:play"));
@@ -1513,6 +2202,21 @@ mod tests {
     }
 
     #[test]
+    fn app_has_theme() {
+        let app = App::new("");
+        assert!(!app.theme.name.is_empty());
+        assert!(!app.available_themes.is_empty());
+    }
+
+    #[test]
+    fn cycle_theme_action() {
+        let mut app = App::new("");
+        let first_name = app.theme.name.clone();
+        app.handle_action(Action::CycleTheme);
+        assert_ne!(app.theme.name, first_name);
+    }
+
+    #[test]
     fn dirty_flag_set_on_editor_delete() {
         let mut app = App::new("ab");
         app.handle_action(Action::EditorDelete);
@@ -1525,5 +2229,191 @@ mod tests {
         let mut app = App::new(src);
         app.handle_action(Action::CompileReload);
         assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    }
+
+    // --- REPL eval tests ---
+
+    #[test]
+    fn eval_immediate_compiles_and_autoplays() {
+        let src = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        assert!(!app.is_playing);
+        app.handle_action(Action::EvalImmediate);
+        assert_eq!(app.status.compile_status, CompileStatus::Ok);
+        assert!(app.is_playing); // Auto-started
+    }
+
+    #[test]
+    fn eval_immediate_error_does_not_autoplay() {
+        let mut app = App::new("invalid {{{");
+        app.handle_action(Action::EvalImmediate);
+        assert!(matches!(app.status.compile_status, CompileStatus::Error(_)));
+        assert!(!app.is_playing);
+    }
+
+    // --- Command bar tests ---
+
+    #[test]
+    fn command_bar_activate_deactivate() {
+        let mut app = App::new("");
+        assert!(!app.command_bar.active);
+        app.handle_action(Action::ActivateCommandBar);
+        assert!(app.command_bar.active);
+        app.handle_action(Action::CommandBarCancel);
+        assert!(!app.command_bar.active);
+    }
+
+    #[test]
+    fn command_bar_insert_and_submit() {
+        let mut app = App::new("");
+        app.handle_action(Action::ActivateCommandBar);
+        app.handle_action(Action::CommandBarInsert(':'));
+        app.handle_action(Action::CommandBarInsert('h'));
+        app.handle_action(Action::CommandBarInsert('e'));
+        app.handle_action(Action::CommandBarInsert('l'));
+        app.handle_action(Action::CommandBarInsert('p'));
+        app.handle_action(Action::CommandBarSubmit);
+        assert!(!app.command_bar.active);
+        // :help toggles help screen
+        assert!(app.help_screen.visible);
+    }
+
+    #[test]
+    fn command_preset_loads() {
+        let mut app = App::new("");
+        app.process_command(":preset techno");
+        assert!(app.editor.content().contains("tempo 130"));
+    }
+
+    #[test]
+    fn command_clear_clears_editor() {
+        let mut app = App::new("tempo 120");
+        app.process_command(":clear");
+        assert!(app.editor.content().is_empty());
+    }
+
+    #[test]
+    fn command_eval_compiles() {
+        let src = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.process_command(":eval");
+        assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    }
+
+    #[test]
+    fn nl_command_faster() {
+        let mut app = App::new("");
+        app.status.bpm = 120.0;
+        app.process_command("faster");
+        assert!((app.status.bpm - 130.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn nl_command_more_reverb() {
+        let src = "macro space = 0.3\nmap space -> reverb_mix (0.0..0.5) linear\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        app.handle_action(Action::CompileReload);
+        let before = app.macro_engine.get_macro("space").unwrap();
+        app.process_command("more reverb");
+        let after = app.macro_engine.get_macro("space").unwrap();
+        assert!(after > before);
+    }
+
+    // --- Tutorial tests ---
+
+    #[test]
+    fn tutorial_start_via_command() {
+        let mut app = App::new("");
+        app.process_command(":tutorial");
+        assert!(app.tutorial.active);
+        assert!(app.tutorial.explanation_visible);
+        assert!(!app.editor.content().is_empty());
+    }
+
+    #[test]
+    fn tutorial_next_prev() {
+        let mut app = App::new("");
+        app.process_command(":tutorial");
+        let first_code = app.editor.content();
+        app.handle_action(Action::TutorialNext);
+        let second_code = app.editor.content();
+        assert_ne!(first_code, second_code);
+        app.handle_action(Action::TutorialPrev);
+        assert_eq!(app.editor.content(), first_code);
+    }
+
+    // --- DSL reference tests ---
+
+    #[test]
+    fn dsl_reference_toggle() {
+        let mut app = App::new("");
+        assert!(!app.dsl_reference.visible);
+        app.handle_action(Action::ToggleDslReference);
+        assert!(app.dsl_reference.visible);
+        app.handle_action(Action::ToggleDslReference);
+        assert!(!app.dsl_reference.visible);
+    }
+
+    #[test]
+    fn escape_closes_dsl_reference() {
+        let mut app = App::new("");
+        app.dsl_reference.show();
+        app.handle_action(Action::Escape);
+        assert!(!app.dsl_reference.visible);
+    }
+
+    // --- Context hint for new features ---
+
+    #[test]
+    fn context_hint_command_bar() {
+        let mut app = App::new("");
+        app.command_bar.activate();
+        assert!(app.context_hint().contains("command"));
+    }
+
+    #[test]
+    fn context_hint_dsl_reference() {
+        let mut app = App::new("");
+        app.dsl_reference.show();
+        assert!(app.context_hint().contains("reference"));
+    }
+
+    // --- Audio reconnection tests ---
+
+    #[test]
+    fn handle_reconnect_audio() {
+        let mut app = App::new("");
+        // Should not panic regardless of audio device availability
+        app.handle_action(Action::ReconnectAudio);
+        // Intent console should have a log entry about the reconnection
+        assert!(app
+            .intent_console
+            .entries()
+            .iter()
+            .any(|e| e.message.contains("audio:")));
+    }
+
+    #[test]
+    fn command_bar_audio_reconnect() {
+        let mut app = App::new("");
+        app.process_command(":audio");
+        assert!(app
+            .intent_console
+            .entries()
+            .iter()
+            .any(|e| e.message.contains("audio:")));
+    }
+
+    #[test]
+    fn check_audio_device_debounce() {
+        let mut app = App::new("");
+        // First call should set last_device_check
+        app.check_audio_device();
+        assert!(app.last_device_check.is_some());
+
+        // Second immediate call should be debounced (no reconnection)
+        let check_time = app.last_device_check;
+        app.check_audio_device();
+        assert_eq!(app.last_device_check, check_time);
     }
 }

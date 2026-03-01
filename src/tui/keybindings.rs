@@ -67,6 +67,36 @@ pub enum Action {
     Escape,
     /// Navigate within a non-editor panel (arrow keys).
     PanelNavigate(KeyCode),
+    /// Cycle to the next theme.
+    CycleTheme,
+    /// Evaluate code immediately (Ctrl+Enter — REPL).
+    EvalImmediate,
+    /// Activate the command bar (Ctrl+;).
+    ActivateCommandBar,
+    /// Insert a character in the command bar.
+    CommandBarInsert(char),
+    /// Submit the command bar input.
+    CommandBarSubmit,
+    /// Cancel the command bar.
+    CommandBarCancel,
+    /// Backspace in the command bar.
+    CommandBarBackspace,
+    /// Move cursor left in command bar.
+    CommandBarLeft,
+    /// Move cursor right in command bar.
+    CommandBarRight,
+    /// Navigate command bar history up.
+    CommandBarHistoryUp,
+    /// Navigate command bar history down.
+    CommandBarHistoryDown,
+    /// Next tutorial lesson.
+    TutorialNext,
+    /// Previous tutorial lesson.
+    TutorialPrev,
+    /// Toggle the DSL reference overlay.
+    ToggleDslReference,
+    /// Reconnect to the default audio output device.
+    ReconnectAudio,
 }
 
 /// Map a key event to an application action based on the current mode.
@@ -83,8 +113,39 @@ pub fn map_key_with_diff(
     diff_preview_visible: bool,
     focus: FocusPanel,
 ) -> Option<Action> {
+    map_key_full(key, is_edit_mode, diff_preview_visible, focus, false, false)
+}
+
+/// Full key mapping with command bar and tutorial awareness.
+pub fn map_key_full(
+    key: KeyEvent,
+    is_edit_mode: bool,
+    diff_preview_visible: bool,
+    focus: FocusPanel,
+    command_bar_active: bool,
+    tutorial_active: bool,
+) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // Command bar mode intercepts almost all keys
+    if command_bar_active {
+        // Ctrl+Q still quits
+        if ctrl && key.code == KeyCode::Char('q') {
+            return Some(Action::Quit);
+        }
+        return match key.code {
+            KeyCode::Enter => Some(Action::CommandBarSubmit),
+            KeyCode::Esc => Some(Action::CommandBarCancel),
+            KeyCode::Backspace => Some(Action::CommandBarBackspace),
+            KeyCode::Left => Some(Action::CommandBarLeft),
+            KeyCode::Right => Some(Action::CommandBarRight),
+            KeyCode::Up => Some(Action::CommandBarHistoryUp),
+            KeyCode::Down => Some(Action::CommandBarHistoryDown),
+            KeyCode::Char(c) => Some(Action::CommandBarInsert(c)),
+            _ => None,
+        };
+    }
 
     // Diff preview mode intercepts most keys
     if diff_preview_visible {
@@ -104,14 +165,24 @@ pub fn map_key_with_diff(
             KeyCode::Char('r') => Some(Action::CompileReload),
             KeyCode::Char('p') => Some(Action::ToggleMode),
             KeyCode::Char('l') => Some(Action::ToggleCrashLog),
+            KeyCode::Char('t') => Some(Action::CycleTheme),
+            KeyCode::Char('d') => Some(Action::ReconnectAudio),
             KeyCode::Char('z') if !is_edit_mode => Some(Action::MacroUndo),
             KeyCode::Char('y') if !is_edit_mode => Some(Action::MacroRedo),
+            KeyCode::Enter => Some(Action::EvalImmediate),
+            KeyCode::Char(';') => Some(Action::ActivateCommandBar),
+            KeyCode::Right if tutorial_active => Some(Action::TutorialNext),
+            KeyCode::Left if tutorial_active => Some(Action::TutorialPrev),
             _ => None,
         };
     }
 
     // Help toggle (? key) — available in all panels except editor in edit mode
     if key.code == KeyCode::Char('?') && !(is_edit_mode && focus == FocusPanel::Editor) {
+        // Shift+? toggles DSL reference, plain ? toggles help
+        if shift {
+            return Some(Action::ToggleDslReference);
+        }
         return Some(Action::ToggleHelp);
     }
 
@@ -433,6 +504,28 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_t_cycles_theme() {
+        assert_eq!(map_key(ctrl_key('t'), false), Some(Action::CycleTheme));
+        assert_eq!(map_key(ctrl_key('t'), true), Some(Action::CycleTheme));
+    }
+
+    #[test]
+    fn ctrl_t_works_from_any_panel() {
+        for panel in [
+            FocusPanel::Editor,
+            FocusPanel::Tracks,
+            FocusPanel::Grid,
+            FocusPanel::Macros,
+            FocusPanel::IntentConsole,
+        ] {
+            assert_eq!(
+                map_key_with_diff(ctrl_key('t'), false, false, panel),
+                Some(Action::CycleTheme)
+            );
+        }
+    }
+
+    #[test]
     fn help_toggle_not_in_editor_edit_mode() {
         // When editing in editor, ? should insert the character
         assert_eq!(
@@ -447,5 +540,171 @@ mod tests {
             map_key_with_diff(key(KeyCode::Char('?')), true, false, FocusPanel::Tracks),
             Some(Action::ToggleHelp)
         );
+    }
+
+    // --- New REPL/command bar keybinding tests ---
+
+    #[test]
+    fn ctrl_enter_evals() {
+        assert_eq!(
+            map_key_full(
+                ctrl_key_event(KeyCode::Enter),
+                false,
+                false,
+                FocusPanel::Editor,
+                false,
+                false
+            ),
+            Some(Action::EvalImmediate)
+        );
+    }
+
+    #[test]
+    fn ctrl_semicolon_activates_command_bar() {
+        assert_eq!(
+            map_key_full(
+                ctrl_key_event(KeyCode::Char(';')),
+                false,
+                false,
+                FocusPanel::Editor,
+                false,
+                false
+            ),
+            Some(Action::ActivateCommandBar)
+        );
+    }
+
+    #[test]
+    fn command_bar_routes_chars() {
+        // When command bar is active, regular chars go to CommandBarInsert
+        assert_eq!(
+            map_key_full(
+                key(KeyCode::Char('a')),
+                true,
+                false,
+                FocusPanel::Editor,
+                true,
+                false
+            ),
+            Some(Action::CommandBarInsert('a'))
+        );
+    }
+
+    #[test]
+    fn command_bar_enter_submits() {
+        assert_eq!(
+            map_key_full(
+                key(KeyCode::Enter),
+                true,
+                false,
+                FocusPanel::Editor,
+                true,
+                false
+            ),
+            Some(Action::CommandBarSubmit)
+        );
+    }
+
+    #[test]
+    fn command_bar_esc_cancels() {
+        assert_eq!(
+            map_key_full(
+                key(KeyCode::Esc),
+                true,
+                false,
+                FocusPanel::Editor,
+                true,
+                false
+            ),
+            Some(Action::CommandBarCancel)
+        );
+    }
+
+    #[test]
+    fn command_bar_ctrl_q_still_quits() {
+        assert_eq!(
+            map_key_full(
+                ctrl_key_event(KeyCode::Char('q')),
+                true,
+                false,
+                FocusPanel::Editor,
+                true,
+                false
+            ),
+            Some(Action::Quit)
+        );
+    }
+
+    #[test]
+    fn tutorial_ctrl_right_next() {
+        assert_eq!(
+            map_key_full(
+                ctrl_key_event(KeyCode::Right),
+                false,
+                false,
+                FocusPanel::Editor,
+                false,
+                true
+            ),
+            Some(Action::TutorialNext)
+        );
+    }
+
+    #[test]
+    fn tutorial_ctrl_left_prev() {
+        assert_eq!(
+            map_key_full(
+                ctrl_key_event(KeyCode::Left),
+                false,
+                false,
+                FocusPanel::Editor,
+                false,
+                true
+            ),
+            Some(Action::TutorialPrev)
+        );
+    }
+
+    #[test]
+    fn ctrl_d_reconnects_audio() {
+        assert_eq!(map_key(ctrl_key('d'), false), Some(Action::ReconnectAudio));
+        assert_eq!(map_key(ctrl_key('d'), true), Some(Action::ReconnectAudio));
+    }
+
+    #[test]
+    fn ctrl_d_works_from_any_panel() {
+        for panel in [
+            FocusPanel::Editor,
+            FocusPanel::Tracks,
+            FocusPanel::Grid,
+            FocusPanel::Macros,
+            FocusPanel::IntentConsole,
+        ] {
+            assert_eq!(
+                map_key_with_diff(ctrl_key('d'), false, false, panel),
+                Some(Action::ReconnectAudio)
+            );
+        }
+    }
+
+    #[test]
+    fn existing_map_key_still_works() {
+        // Verify backward compatibility: map_key still routes correctly
+        assert_eq!(map_key(ctrl_key('q'), false), Some(Action::Quit));
+        assert_eq!(map_key(key(KeyCode::Tab), false), Some(Action::CycleFocus));
+        assert_eq!(
+            map_key(key(KeyCode::Char(' ')), false),
+            Some(Action::TogglePlayback)
+        );
+    }
+
+    /// Helper for creating a Ctrl+key event from a KeyCode (not just char).
+    fn ctrl_key_event(code: KeyCode) -> KeyEvent {
+        KeyEvent {
+            code,
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        }
     }
 }
