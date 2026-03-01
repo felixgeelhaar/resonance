@@ -16,7 +16,9 @@ pub mod keybindings;
 pub mod layers;
 pub mod layout;
 pub mod macros;
+pub mod settings;
 pub mod status;
+pub mod syntax;
 pub mod theme;
 pub mod tracks;
 pub mod tutorial;
@@ -33,6 +35,7 @@ pub use keybindings::{map_key, Action};
 pub use layers::LayerPanel;
 pub use layout::{AppMode, FocusPanel};
 pub use macros::MacroPanel;
+pub use settings::SettingsPanel;
 pub use status::{CompileStatus, StatusInfo};
 pub use tracks::TrackList;
 pub use tutorial::TutorialMode;
@@ -44,8 +47,10 @@ use crossterm::event::{self, Event as CrosstermEvent, KeyEventKind};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, BorderType, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
+
+use theme::Theme;
 
 /// Debounce delay before auto-recompiling after an edit (milliseconds).
 const COMPILE_DEBOUNCE_MS: u64 = 300;
@@ -59,6 +64,29 @@ use crate::intent::{IntentProcessor, PerformanceIntent, StructuralIntentProcesso
 use crate::macro_engine::history::MacroHistory;
 use crate::macro_engine::{MacroEngine, Mapping};
 use crate::section::{Section, SectionController};
+
+/// Create a themed block with rounded borders and focus-aware border color.
+fn themed_block<'a>(title: &'a str, focused: bool, theme: &'a Theme) -> Block<'a> {
+    Block::default()
+        .title(title)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(if focused {
+            Style::default().fg(theme.border_focused)
+        } else {
+            Style::default().fg(theme.border)
+        })
+}
+
+/// Create a themed overlay block with rounded borders on a dark background.
+fn themed_overlay_block<'a>(title: &'a str, theme: &'a Theme) -> Block<'a> {
+    Block::default()
+        .style(Style::default().bg(Color::Black))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.border_focused))
+        .title(title)
+}
 
 /// The main TUI application state.
 pub struct App {
@@ -86,6 +114,7 @@ pub struct App {
     pub command_bar: CommandBar,
     pub tutorial: TutorialMode,
     pub dsl_reference: DslReference,
+    pub settings_panel: SettingsPanel,
     pub structural_intent_processor: StructuralIntentProcessor,
     #[cfg(feature = "llm")]
     llm_client: Option<crate::ai::llm::LlmClient>,
@@ -106,6 +135,7 @@ pub struct App {
     last_edit: Option<Instant>,
     pub theme: theme::Theme,
     available_themes: Vec<theme::Theme>,
+    pub peak_level: f32,
 }
 
 impl App {
@@ -150,6 +180,7 @@ impl App {
             command_bar: CommandBar::default(),
             tutorial: TutorialMode::default(),
             dsl_reference: DslReference::default(),
+            settings_panel: SettingsPanel::new(),
             structural_intent_processor: StructuralIntentProcessor::new(),
             #[cfg(feature = "llm")]
             llm_client: crate::ai::config::load_config()
@@ -167,6 +198,7 @@ impl App {
             last_edit: None,
             theme: loaded_theme,
             available_themes,
+            peak_level: 0.0,
         }
     }
 
@@ -362,6 +394,8 @@ impl App {
                     self.crash_log_visible = false;
                 } else if self.help_screen.visible {
                     self.help_screen.hide();
+                } else if self.settings_panel.visible {
+                    self.settings_panel.hide();
                 } else if self.dsl_reference.visible {
                     self.dsl_reference.hide();
                 } else if self.tutorial.active && self.tutorial.explanation_visible {
@@ -448,6 +482,66 @@ impl App {
             Action::ReconnectAudio => {
                 self.reconnect_audio_device();
             }
+            Action::ToggleSettings => {
+                self.settings_panel.toggle();
+            }
+            Action::SettingsNextTab => {
+                self.settings_panel.next_tab();
+                // Live preview theme changes
+                if self.settings_panel.active_tab == settings::SettingsTab::Theme {
+                    self.apply_settings_theme_preview();
+                }
+            }
+            Action::SettingsPrevTab => {
+                self.settings_panel.prev_tab();
+                if self.settings_panel.active_tab == settings::SettingsTab::Theme {
+                    self.apply_settings_theme_preview();
+                }
+            }
+            Action::SettingsNextField => {
+                self.settings_panel.next_field();
+            }
+            Action::SettingsPrevField => {
+                self.settings_panel.prev_field();
+            }
+            Action::SettingsToggleField => {
+                self.settings_panel.toggle_field();
+                // Live preview theme changes
+                if self.settings_panel.active_tab == settings::SettingsTab::Theme {
+                    self.apply_settings_theme_preview();
+                }
+            }
+            Action::SettingsInsert(c) => {
+                self.settings_panel.insert_char(c);
+            }
+            Action::SettingsBackspace => {
+                self.settings_panel.backspace();
+            }
+            Action::SettingsStopEdit => {
+                self.settings_panel.stop_editing();
+            }
+            Action::SettingsSave => match self.settings_panel.save_to_configs() {
+                Ok(()) => {
+                    self.settings_panel.dirty = false;
+                    self.intent_console
+                        .log("settings saved", self.current_beat.as_beats_f64());
+                }
+                Err(e) => {
+                    self.intent_console.log(
+                        format!("settings error: {e}"),
+                        self.current_beat.as_beats_f64(),
+                    );
+                }
+            },
+        }
+    }
+
+    /// Apply the theme selected in the settings panel as a live preview.
+    fn apply_settings_theme_preview(&mut self) {
+        if let Some(name) = self.settings_panel.selected_theme_name().map(String::from) {
+            if let Some(t) = self.available_themes.iter().find(|t| t.name == name) {
+                self.theme = t.clone();
+            }
         }
     }
 
@@ -470,6 +564,10 @@ impl App {
                 if let Some(samples) =
                     scheduler.render_block_with(render_fn, |e| macro_engine.apply_to_event(e))
                 {
+                    // Track peak level for VU meter
+                    let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+                    self.peak_level = peak * 0.3 + self.peak_level * 0.7;
+
                     if let Some(ref mut engine) = self.audio_engine {
                         let _ = engine.send_samples(samples);
 
@@ -782,6 +880,9 @@ impl App {
                 "audio" | "reconnect" => {
                     self.reconnect_audio_device();
                 }
+                "settings" => {
+                    self.settings_panel.toggle();
+                }
                 "presets" => {
                     let presets = crate::content::presets::list_presets();
                     for p in &presets {
@@ -1050,7 +1151,7 @@ impl App {
         // Status bar
         self.draw_status(frame, chunks[4]);
 
-        // Overlay priority: help > dsl_reference > tutorial > crash_log > diff_preview
+        // Overlay priority: help > settings > dsl_reference > tutorial > crash_log > diff_preview
         if self.diff_preview.visible {
             self.draw_diff_preview(frame, size);
         }
@@ -1067,6 +1168,10 @@ impl App {
             self.draw_dsl_reference(frame, size);
         }
 
+        if self.settings_panel.visible {
+            self.settings_panel.draw(frame, size, &self.theme);
+        }
+
         // Help overlay (rendered on top of everything)
         if self.help_screen.visible {
             self.draw_help(frame, size);
@@ -1075,11 +1180,6 @@ impl App {
 
     fn draw_editor(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Editor;
-        let border_style = if focused {
-            Style::default().fg(self.theme.border_focused)
-        } else {
-            Style::default().fg(self.theme.border)
-        };
 
         // Compute inner height (subtract 2 for top+bottom borders)
         let inner_height = area.height.saturating_sub(2) as usize;
@@ -1087,6 +1187,7 @@ impl App {
         let scroll_offset = self.editor.scroll_offset();
 
         let line_num_color = self.theme.editor_line_number;
+        let theme = &self.theme;
         let lines: Vec<Line> = self
             .editor
             .lines()
@@ -1097,22 +1198,21 @@ impl App {
             .map(|(i, line)| {
                 let num =
                     Span::styled(format!("{:3} ", i + 1), Style::default().fg(line_num_color));
-                let content = Span::raw(line.as_str());
-                Line::from(vec![num, content])
+                let mut spans = vec![num];
+                spans.extend(syntax::highlight_line(line.as_str(), theme));
+                Line::from(spans)
             })
             .collect();
 
-        let block = Block::default()
-            .title(format!(
-                " Code [{}] ",
-                if self.mode == AppMode::Edit {
-                    "EDIT"
-                } else {
-                    "VIEW"
-                }
-            ))
-            .borders(Borders::ALL)
-            .border_style(border_style);
+        let title = format!(
+            " Code [{}] ",
+            if self.mode == AppMode::Edit {
+                "EDIT"
+            } else {
+                "VIEW"
+            }
+        );
+        let block = themed_block(&title, focused, &self.theme);
 
         let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(paragraph, area);
@@ -1131,11 +1231,6 @@ impl App {
 
     fn draw_tracks(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Tracks;
-        let border_style = if focused {
-            Style::default().fg(self.theme.border_focused)
-        } else {
-            Style::default().fg(self.theme.border)
-        };
 
         let items: Vec<ListItem> = self
             .track_list
@@ -1151,12 +1246,7 @@ impl App {
             .collect();
 
         let list = List::new(items)
-            .block(
-                Block::default()
-                    .title(" Tracks ")
-                    .borders(Borders::ALL)
-                    .border_style(border_style),
-            )
+            .block(themed_block(" Tracks ", focused, &self.theme))
             .highlight_style(Style::default().add_modifier(Modifier::BOLD));
 
         frame.render_widget(list, area);
@@ -1164,17 +1254,10 @@ impl App {
 
     fn draw_grid(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Grid;
-        let border_style = if focused {
-            Style::default().fg(self.theme.border_focused)
-        } else {
-            Style::default().fg(self.theme.border)
-        };
 
         let zoom_label = self.grid_zoom.label();
-        let block = Block::default()
-            .title(format!(" Grid [{zoom_label}] "))
-            .borders(Borders::ALL)
-            .border_style(border_style);
+        let title = format!(" Grid [{zoom_label}] ");
+        let block = themed_block(&title, focused, &self.theme);
 
         if self.compiled_events.is_empty() {
             let paragraph = Paragraph::new("(no events — compile with Ctrl-R)").block(block);
@@ -1199,9 +1282,16 @@ impl App {
                     format!("{:>8} ", tg.track_name),
                     Style::default().fg(tc),
                 )];
-                for cell in &tg.cells {
+                for (step_idx, cell) in tg.cells.iter().enumerate() {
+                    // Insert bar separator every N steps
+                    if step_idx > 0 && step_idx % steps_per_bar == 0 {
+                        spans.push(Span::styled(
+                            "\u{2502}",
+                            Style::default().fg(theme.grid_empty),
+                        ));
+                    }
                     let (text, color) = match cell {
-                        GridCell::Empty => (".", theme.grid_empty),
+                        GridCell::Empty => ("\u{00B7}", theme.grid_empty), // ·
                         GridCell::Hit(v) => {
                             let c = grid::velocity_color(
                                 *v,
@@ -1209,16 +1299,18 @@ impl App {
                                 theme.grid_hit_bright,
                                 theme.grid_hit_dim,
                             );
-                            if *v > 0.6 {
-                                ("X", c)
+                            if *v > 0.7 {
+                                ("\u{2588}", c) // █ full block
+                            } else if *v > 0.4 {
+                                ("\u{2593}", c) // ▓ medium shade
                             } else {
-                                ("x", c)
+                                ("\u{2591}", c) // ░ light shade
                             }
                         }
-                        GridCell::Note(_) => ("N", tc),
-                        GridCell::Cursor => ("|", theme.grid_playhead),
+                        GridCell::Note(_) => ("\u{25CF}", tc), // ● filled circle
+                        GridCell::Cursor => ("\u{2503}", theme.grid_playhead), // ┃ bold vert
                     };
-                    spans.push(Span::styled(format!("{text} "), Style::default().fg(color)));
+                    spans.push(Span::styled(text, Style::default().fg(color)));
                 }
                 Line::from(spans)
             })
@@ -1230,16 +1322,7 @@ impl App {
 
     fn draw_macros(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::Macros;
-        let border_style = if focused {
-            Style::default().fg(self.theme.border_focused)
-        } else {
-            Style::default().fg(self.theme.border)
-        };
-
-        let block = Block::default()
-            .title(" Macros ")
-            .borders(Borders::ALL)
-            .border_style(border_style);
+        let block = themed_block(" Macros ", focused, &self.theme);
 
         if self.macro_panel.is_empty() {
             let paragraph = Paragraph::new("(no macros)").block(block);
@@ -1248,7 +1331,7 @@ impl App {
             let inner = block.inner(area);
             frame.render_widget(block, area);
 
-            // Draw each macro as a gauge
+            // Draw each macro as a gauge with bg color and bold label
             let gauge_height = 1;
             for (i, meter) in self.macro_panel.meters.iter().enumerate() {
                 let y = inner.y + i as u16 * gauge_height;
@@ -1257,9 +1340,16 @@ impl App {
                 }
                 let gauge_area = Rect::new(inner.x, y, inner.width, gauge_height);
                 let gauge = Gauge::default()
-                    .label(format!("{}: {:.0}%", meter.name, meter.value * 100.0))
+                    .label(Span::styled(
+                        format!("{}: {:.0}%", meter.name, meter.value * 100.0),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ))
                     .ratio(meter.value.clamp(0.0, 1.0))
-                    .gauge_style(Style::default().fg(self.theme.macro_bar));
+                    .gauge_style(
+                        Style::default()
+                            .fg(self.theme.macro_bar)
+                            .bg(self.theme.grid_empty),
+                    );
                 frame.render_widget(gauge, gauge_area);
             }
         }
@@ -1267,11 +1357,6 @@ impl App {
 
     fn draw_intent_console(&self, frame: &mut Frame, area: Rect) {
         let focused = self.focus == FocusPanel::IntentConsole;
-        let border_style = if focused {
-            Style::default().fg(self.theme.border_focused)
-        } else {
-            Style::default().fg(self.theme.border)
-        };
 
         let items: Vec<ListItem> = self
             .intent_console
@@ -1281,12 +1366,7 @@ impl App {
             .map(|e| ListItem::new(format!("[{:.1}] {}", e.timestamp_beats, e.message)))
             .collect();
 
-        let list = List::new(items).block(
-            Block::default()
-                .title(" Intent Console ")
-                .borders(Borders::ALL)
-                .border_style(border_style),
-        );
+        let list = List::new(items).block(themed_block(" Intent Console ", focused, &self.theme));
 
         frame.render_widget(list, area);
     }
@@ -1301,12 +1381,7 @@ impl App {
         let y = area.y + (area.height.saturating_sub(height)) / 2;
         let overlay = Rect::new(x, y, width, height);
 
-        // Clear the background
-        let clear = Block::default()
-            .style(Style::default().bg(Color::Black))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.title))
-            .title(" Diff Preview ");
+        let clear = themed_overlay_block(" Diff Preview ", &self.theme);
         let inner = clear.inner(overlay);
         frame.render_widget(clear, overlay);
 
@@ -1339,11 +1414,7 @@ impl App {
         let y = area.y + (area.height.saturating_sub(height)) / 2;
         let overlay = Rect::new(x, y, width, height);
 
-        let block = Block::default()
-            .style(Style::default().bg(Color::Black))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border_focused))
-            .title(" Help — Press ? or Esc to close ");
+        let block = themed_overlay_block(" Help \u{2014} Press ? or Esc to close ", &self.theme);
         let inner = block.inner(overlay);
         frame.render_widget(block, overlay);
 
@@ -1377,8 +1448,9 @@ impl App {
         let block = Block::default()
             .style(Style::default().bg(Color::Black))
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(self.theme.diff_remove))
-            .title(" Crash Log — Press Ctrl-L or Esc to close ");
+            .title(" Crash Log \u{2014} Press Ctrl-L or Esc to close ");
         let inner = block.inner(overlay);
         frame.render_widget(block, overlay);
 
@@ -1453,11 +1525,7 @@ impl App {
             " Tutorial ".to_string()
         };
 
-        let block = Block::default()
-            .style(Style::default().bg(Color::Black))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border_focused))
-            .title(lesson_info);
+        let block = themed_overlay_block(&lesson_info, &self.theme);
         let inner = block.inner(overlay);
         frame.render_widget(block, overlay);
 
@@ -1506,11 +1574,10 @@ impl App {
         let y = area.y + (area.height.saturating_sub(height)) / 2;
         let overlay = Rect::new(x, y, width, height);
 
-        let block = Block::default()
-            .style(Style::default().bg(Color::Black))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.theme.border_focused))
-            .title(" DSL Reference — Shift+? or Esc to close ");
+        let block = themed_overlay_block(
+            " DSL Reference \u{2014} Shift+? or Esc to close ",
+            &self.theme,
+        );
         let inner = block.inner(overlay);
         frame.render_widget(block, overlay);
 
@@ -1539,6 +1606,9 @@ impl App {
         if self.command_bar.active {
             return "> type command or natural language | Esc:cancel";
         }
+        if self.settings_panel.visible {
+            return "Tab:switch  Up/Down:navigate  Enter:edit  Ctrl+S:save  Esc:close";
+        }
         if self.crash_log_visible {
             return "Ctrl-L/Esc:close crash log";
         }
@@ -1565,6 +1635,21 @@ impl App {
 
     fn draw_status(&self, frame: &mut Frame, area: Rect) {
         let theme = &self.theme;
+
+        // Beat pulse indicator
+        let beat_pulse = if self.is_playing {
+            let beat_frac = self.current_beat.as_beats_f64() % 1.0;
+            if beat_frac < 0.15 {
+                Span::styled("\u{25CF} ", Style::default().fg(theme.beat_pulse))
+            // ● golden
+            } else {
+                Span::styled("\u{25CB} ", Style::default().fg(theme.grid_empty))
+                // ○ dim
+            }
+        } else {
+            Span::styled("\u{25CB} ", Style::default().fg(theme.grid_empty))
+        };
+
         let compile_indicator = match &self.status.compile_status {
             CompileStatus::Ok => Span::styled(" OK ", Style::default().fg(theme.diff_add)),
             CompileStatus::Error(_) => {
@@ -1591,6 +1676,32 @@ impl App {
             None => Span::styled(" NO AUDIO ", Style::default().fg(theme.diff_remove)),
         };
 
+        // VU meter: 8-char bar based on peak_level
+        let vu_meter = {
+            let level = self.peak_level.clamp(0.0, 1.0);
+            let filled = (level * 8.0).round() as usize;
+            let mut spans = vec![Span::raw("[")];
+            for i in 0..8 {
+                let color = if i < 5 {
+                    theme.vu_low
+                } else if i < 7 {
+                    theme.vu_mid
+                } else {
+                    theme.vu_high
+                };
+                if i < filled {
+                    spans.push(Span::styled("\u{2588}", Style::default().fg(color)));
+                } else {
+                    spans.push(Span::styled(
+                        "\u{2591}",
+                        Style::default().fg(theme.grid_empty),
+                    ));
+                }
+            }
+            spans.push(Span::raw("]"));
+            spans
+        };
+
         // Only show MIDI/OSC indicators when connected (save status bar space)
         let midi_indicator = if self.midi_input.is_some() {
             Span::styled(" MIDI", Style::default().fg(theme.diff_add))
@@ -1603,9 +1714,11 @@ impl App {
             Span::raw("")
         };
 
-        let line = Line::from(vec![
+        let mut spans = vec![
+            Span::raw(" "),
+            beat_pulse,
             Span::styled(
-                format!(" {} ", self.status.playback_display()),
+                format!("{} ", self.status.playback_display()),
                 Style::default()
                     .fg(if self.status.is_playing {
                         theme.diff_add
@@ -1615,13 +1728,16 @@ impl App {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(
-                " BPM:{:.0} | {} | {} | Z:{} ",
+                "BPM:{:.0} | {} | {} | Z:{} ",
                 self.status.bpm,
                 self.status.position_display(),
                 self.status.mode_display(),
                 self.grid_zoom.label(),
             )),
             compile_indicator,
+        ];
+        spans.extend(vu_meter);
+        spans.extend([
             audio_device_indicator,
             midi_indicator,
             osc_indicator,
@@ -1631,6 +1747,7 @@ impl App {
             ),
         ]);
 
+        let line = Line::from(spans);
         let paragraph =
             Paragraph::new(line).style(Style::default().bg(theme.status_bg).fg(theme.status_fg));
         frame.render_widget(paragraph, area);
@@ -1736,13 +1853,17 @@ impl App {
                         let diff_visible = self.diff_preview.visible;
                         let cmd_bar_active = self.command_bar.active;
                         let tutorial_active = self.tutorial.active;
-                        if let Some(action) = keybindings::map_key_full(
+                        let settings_active = self.settings_panel.visible;
+                        let settings_editing = self.settings_panel.editing;
+                        if let Some(action) = keybindings::map_key_all(
                             key,
                             is_edit,
                             diff_visible,
                             self.focus,
                             cmd_bar_active,
                             tutorial_active,
+                            settings_active,
+                            settings_editing,
                         ) {
                             self.handle_action(action);
                         }

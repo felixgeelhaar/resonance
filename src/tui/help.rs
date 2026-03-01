@@ -86,6 +86,7 @@ impl HelpScreen {
         lines.push(l("  Shift-?      DSL quick reference"));
         lines.push(l("  Ctrl-L       Toggle crash log"));
         lines.push(l("  Ctrl-T       Cycle theme"));
+        lines.push(l("  Ctrl-,       Open settings"));
         lines.push(l("  Ctrl-D       Reconnect audio device"));
         lines.push(l(""));
 
@@ -118,6 +119,7 @@ impl HelpScreen {
         lines.push(l("  :help        Toggle help screen"));
         lines.push(l("  :eval        Evaluate code (same as Ctrl-Enter)"));
         lines.push(l("  :audio       Reconnect audio device"));
+        lines.push(l("  :settings    Open settings panel"));
         lines.push(l("  :clear       Clear editor"));
         lines.push(l("  (text)       Natural language command"));
         lines.push(l(""));

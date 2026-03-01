@@ -97,6 +97,26 @@ pub enum Action {
     ToggleDslReference,
     /// Reconnect to the default audio output device.
     ReconnectAudio,
+    /// Toggle the settings panel.
+    ToggleSettings,
+    /// Settings: switch to next tab.
+    SettingsNextTab,
+    /// Settings: switch to previous tab.
+    SettingsPrevTab,
+    /// Settings: move to next field.
+    SettingsNextField,
+    /// Settings: move to previous field.
+    SettingsPrevField,
+    /// Settings: toggle/activate current field.
+    SettingsToggleField,
+    /// Settings: insert character while editing a text field.
+    SettingsInsert(char),
+    /// Settings: backspace while editing a text field.
+    SettingsBackspace,
+    /// Settings: stop editing current text field.
+    SettingsStopEdit,
+    /// Settings: save all settings to disk.
+    SettingsSave,
 }
 
 /// Map a key event to an application action based on the current mode.
@@ -116,7 +136,7 @@ pub fn map_key_with_diff(
     map_key_full(key, is_edit_mode, diff_preview_visible, focus, false, false)
 }
 
-/// Full key mapping with command bar and tutorial awareness.
+/// Full key mapping with command bar, tutorial, and settings awareness.
 pub fn map_key_full(
     key: KeyEvent,
     is_edit_mode: bool,
@@ -125,8 +145,68 @@ pub fn map_key_full(
     command_bar_active: bool,
     tutorial_active: bool,
 ) -> Option<Action> {
+    map_key_all(
+        key,
+        is_edit_mode,
+        diff_preview_visible,
+        focus,
+        command_bar_active,
+        tutorial_active,
+        false,
+        false,
+    )
+}
+
+/// Full key mapping with all modal states including settings panel.
+#[allow(clippy::too_many_arguments)]
+pub fn map_key_all(
+    key: KeyEvent,
+    is_edit_mode: bool,
+    diff_preview_visible: bool,
+    focus: FocusPanel,
+    command_bar_active: bool,
+    tutorial_active: bool,
+    settings_active: bool,
+    settings_editing: bool,
+) -> Option<Action> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    // Settings panel intercepts keys when visible
+    if settings_active {
+        // Ctrl+Q still quits
+        if ctrl && key.code == KeyCode::Char('q') {
+            return Some(Action::Quit);
+        }
+        // Ctrl+S saves
+        if ctrl && key.code == KeyCode::Char('s') {
+            return Some(Action::SettingsSave);
+        }
+
+        if settings_editing {
+            // Text editing mode
+            return match key.code {
+                KeyCode::Esc => Some(Action::SettingsStopEdit),
+                KeyCode::Enter => Some(Action::SettingsStopEdit),
+                KeyCode::Backspace => Some(Action::SettingsBackspace),
+                KeyCode::Char(c) => Some(Action::SettingsInsert(c)),
+                _ => None,
+            };
+        }
+
+        return match key.code {
+            KeyCode::Esc => Some(Action::ToggleSettings),
+            KeyCode::Tab if shift => Some(Action::SettingsPrevTab),
+            KeyCode::Tab => Some(Action::SettingsNextTab),
+            KeyCode::BackTab => Some(Action::SettingsPrevTab),
+            KeyCode::Up => Some(Action::SettingsPrevField),
+            KeyCode::Down => Some(Action::SettingsNextField),
+            KeyCode::Enter => Some(Action::SettingsToggleField),
+            KeyCode::Left => Some(Action::SettingsPrevTab),
+            KeyCode::Right => Some(Action::SettingsNextTab),
+            _ => None,
+        };
+    }
 
     // Command bar mode intercepts almost all keys
     if command_bar_active {
@@ -167,6 +247,7 @@ pub fn map_key_full(
             KeyCode::Char('l') => Some(Action::ToggleCrashLog),
             KeyCode::Char('t') => Some(Action::CycleTheme),
             KeyCode::Char('d') => Some(Action::ReconnectAudio),
+            KeyCode::Char(',') => Some(Action::ToggleSettings),
             KeyCode::Char('z') if !is_edit_mode => Some(Action::MacroUndo),
             KeyCode::Char('y') if !is_edit_mode => Some(Action::MacroRedo),
             KeyCode::Enter => Some(Action::EvalImmediate),
