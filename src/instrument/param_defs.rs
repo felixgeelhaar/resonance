@@ -50,6 +50,21 @@ pub fn delay_mix() -> ParamId {
     ParamId("delay_mix".to_string())
 }
 
+/// Delay feedback 0.0–0.95 (default: 0.4).
+pub fn delay_feedback() -> ParamId {
+    ParamId("delay_feedback".to_string())
+}
+
+/// Delay time in beats (default: 0.5 = eighth note).
+pub fn delay_time() -> ParamId {
+    ParamId("delay_time".to_string())
+}
+
+/// Reverb decay 0.0–0.99 (controls comb feedback, default: 0.84).
+pub fn reverb_decay() -> ParamId {
+    ParamId("reverb_decay".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,6 +92,9 @@ mod tests {
             drive(),
             reverb_mix(),
             delay_mix(),
+            delay_feedback(),
+            delay_time(),
+            reverb_decay(),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
@@ -96,5 +114,8 @@ mod tests {
         assert_eq!(drive().0, "drive");
         assert_eq!(reverb_mix().0, "reverb_mix");
         assert_eq!(delay_mix().0, "delay_mix");
+        assert_eq!(delay_feedback().0, "delay_feedback");
+        assert_eq!(delay_time().0, "delay_time");
+        assert_eq!(reverb_decay().0, "reverb_decay");
     }
 }

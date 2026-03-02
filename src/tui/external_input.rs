@@ -2,7 +2,7 @@
 
 use std::sync::mpsc;
 
-/// Events from external controllers (MIDI, OSC, etc.).
+/// Events from external controllers (MIDI, OSC, AI, etc.).
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExternalEvent {
     /// Set a macro to a specific value by name.
@@ -29,6 +29,11 @@ pub enum ExternalEvent {
     BpmSet(f64),
     /// Toggle play/stop.
     PlayStop,
+    /// AI response with proposed DSL source.
+    AiResponse {
+        input: String,
+        proposed_source: String,
+    },
 }
 
 /// Sender half — clone this for MIDI/OSC threads.

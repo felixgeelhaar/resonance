@@ -133,6 +133,12 @@ impl Parser {
                 self.advance();
                 Ok(InstrumentRef::Noise)
             }
+            TokenKind::Plugin => {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                let name = self.expect_ident()?;
+                Ok(InstrumentRef::Plugin(name))
+            }
             TokenKind::Ident(s) if s == "kit" => {
                 self.advance();
                 self.expect(TokenKind::Colon)?;
@@ -424,6 +430,13 @@ impl Parser {
                 self.expect(TokenKind::RParen)?;
                 Ok(InstrumentRef::Kit(_name))
             }
+            TokenKind::Plugin => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let name = self.expect_string_literal()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(InstrumentRef::Plugin(name))
+            }
             TokenKind::Bass => {
                 self.advance();
                 if self.check(TokenKind::LParen) {
@@ -709,6 +722,7 @@ impl Parser {
             TokenKind::Pluck => "pluck".to_string(),
             TokenKind::Noise => "noise".to_string(),
             TokenKind::Kit => "kit".to_string(),
+            TokenKind::Plugin => "plugin".to_string(),
             _ => {
                 return Err(CompileError::parse(
                     format!("expected name, got {:?}", t.kind),
@@ -1195,5 +1209,143 @@ track drums {
 "#;
         let prog = parse(src).unwrap();
         assert!(prog.layers.is_empty());
+    }
+
+    // --- Functional chain syntax tests ---
+
+    #[test]
+    fn parse_functional_bass_track() {
+        let src = r#"drums = bass() |> kick.pattern("X . . .")"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.tracks.len(), 1);
+        assert_eq!(prog.tracks[0].name, "drums");
+        assert_eq!(prog.tracks[0].instrument, InstrumentRef::Bass);
+        assert_eq!(prog.tracks[0].sections.len(), 1);
+        assert_eq!(prog.tracks[0].sections[0].name, "main");
+    }
+
+    #[test]
+    fn parse_functional_poly_track() {
+        let src = r#"pad = poly() |> note.pattern("X . X .")"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.tracks[0].instrument, InstrumentRef::Poly);
+    }
+
+    #[test]
+    fn parse_functional_pluck_track() {
+        let src = r#"keys = pluck() |> note.pattern("X . X .")"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.tracks[0].instrument, InstrumentRef::Pluck);
+    }
+
+    #[test]
+    fn parse_functional_noise_track() {
+        let src = r#"fx = noise() |> hit.pattern("X . . .")"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.tracks[0].instrument, InstrumentRef::Noise);
+    }
+
+    #[test]
+    fn parse_functional_kit_track() {
+        let src = r#"drums = kit("default") |> kick.pattern("X . . .")"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(
+            prog.tracks[0].instrument,
+            InstrumentRef::Kit("default".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_functional_instrument_only() {
+        let src = "mytrack = bass()";
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.tracks[0].name, "mytrack");
+        assert_eq!(prog.tracks[0].instrument, InstrumentRef::Bass);
+        assert!(prog.tracks[0].sections.is_empty());
+    }
+
+    #[test]
+    fn parse_functional_inline_pattern_rest_char() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x?")"#;
+        let prog = parse(src).unwrap();
+        let steps = &prog.tracks[0].sections[0].patterns[0].steps;
+        assert_eq!(steps[0], Step::Hit);
+        assert_eq!(steps[1], Step::Rest);
+        assert_eq!(steps[2], Step::Accent(0.5));
+        assert_eq!(steps[3], Step::Rest); // '?' falls to rest
+    }
+
+    // --- Mapping log curve ---
+
+    #[test]
+    fn parse_mapping_log_curve() {
+        let src = "map intensity -> drive (0.0..10.0) log";
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.mappings[0].curve, CurveKind::Log);
+    }
+
+    // --- Override log curve ---
+
+    #[test]
+    fn parse_override_log_curve() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [1 bars] {
+    kick: [X . . .]
+    override intensity -> drive (0.0..10.0) log
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(
+            prog.tracks[0].sections[0].overrides[0].curve,
+            CurveKind::Log
+        );
+    }
+
+    // --- Layer log curve ---
+
+    #[test]
+    fn parse_plugin_declarative() {
+        let src = r#"
+track lead {
+  plugin: warm_pad
+  section main [2 bars] {
+    note: [C4 . . C4 . . E4 .]
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(
+            prog.tracks[0].instrument,
+            InstrumentRef::Plugin("warm_pad".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_plugin_functional() {
+        let src = r#"lead = plugin("warm_pad") |> note.pattern("X . X .")"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(
+            prog.tracks[0].instrument,
+            InstrumentRef::Plugin("warm_pad".to_string())
+        );
+        assert_eq!(prog.tracks[0].name, "lead");
+    }
+
+    #[test]
+    fn parse_layer_log_curve() {
+        let src = r#"
+layer wash {
+  intensity -> drive (0.0..10.0) log
+}
+track drums {
+  kit: default
+  section main [1 bars] { kick: [X . . .] }
+}
+"#;
+        let prog = parse(src).unwrap();
+        assert_eq!(prog.layers[0].mappings[0].curve, CurveKind::Log);
     }
 }

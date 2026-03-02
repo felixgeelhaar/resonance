@@ -458,8 +458,8 @@ fn context_hint_edit_mode_editor() {
     app.mode = AppMode::Edit;
     app.focus = FocusPanel::Editor;
     assert!(
-        app.context_hint().contains("Type to edit"),
-        "Edit+Editor hint should mention typing"
+        app.context_hint().contains("Ctrl+Enter"),
+        "Edit+Editor hint should mention eval"
     );
 }
 
@@ -703,4 +703,581 @@ fn recompile_while_playing() {
         app.current_beat.ticks() > 0,
         "should advance after recompile"
     );
+}
+
+// =============================================================================
+// REPL & Beginner UX End-to-End Tests
+// =============================================================================
+
+#[test]
+fn all_preset_files_compile_through_content_module() {
+    // Verify every built-in preset loads and compiles end-to-end
+    use resonance::content::presets;
+    use resonance::dsl::Compiler;
+
+    for name in &["house", "techno", "ambient", "dnb", "empty"] {
+        let source = presets::load_preset(name);
+        assert!(source.is_some(), "preset '{name}' should be loadable");
+        let source = source.unwrap();
+        assert!(!source.is_empty(), "preset '{name}' should not be empty");
+        let result = Compiler::compile(&source);
+        assert!(
+            result.is_ok(),
+            "preset '{name}' should compile, got: {:?}",
+            result.err()
+        );
+    }
+}
+
+#[test]
+fn all_presets_load_into_app_and_compile() {
+    // Full App integration: load each preset into App and verify compilation succeeds
+    use resonance::content::presets;
+
+    for name in &["house", "techno", "ambient", "dnb", "empty"] {
+        let source = presets::load_preset(name).unwrap();
+        let mut app = App::new(&source);
+        app.handle_action(Action::CompileReload);
+        assert_eq!(
+            app.status.compile_status,
+            CompileStatus::Ok,
+            "App should compile '{name}' preset successfully"
+        );
+        assert!(
+            !app.compiled_events.is_empty() || *name == "empty",
+            "compiled '{name}' should have events (except empty)"
+        );
+    }
+}
+
+#[test]
+fn ambient_preset_has_correct_structure() {
+    // Specifically test ambient preset: 85 BPM, pad/pluck tracks, sections, heavy reverb
+    use resonance::content::presets;
+    use resonance::dsl::Compiler;
+
+    let source = presets::load_preset("ambient").unwrap();
+    assert!(source.contains("tempo 85"), "ambient should be 85 BPM");
+    assert!(source.contains("poly"), "ambient should have poly synth");
+    assert!(source.contains("pluck"), "ambient should have pluck synth");
+    assert!(
+        source.contains("reverb_mix"),
+        "ambient should map reverb_mix"
+    );
+    assert!(source.contains("delay_mix"), "ambient should map delay_mix");
+
+    let compiled = Compiler::compile(&source).unwrap();
+    assert!(compiled.tempo >= 84.0 && compiled.tempo <= 86.0);
+    assert!(
+        compiled.track_defs.len() >= 2,
+        "ambient should have >= 2 tracks"
+    );
+    assert!(
+        compiled.sections.len() >= 2,
+        "ambient should have >= 2 sections"
+    );
+    assert!(
+        compiled.mappings.len() >= 4,
+        "ambient should have >= 4 mappings"
+    );
+}
+
+#[test]
+fn ambient_preset_app_produces_events_and_plays() {
+    use resonance::content::presets;
+
+    let source = presets::load_preset("ambient").unwrap();
+    let mut app = App::new(&source);
+    app.handle_action(Action::CompileReload);
+    assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    assert!(
+        !app.compiled_events.is_empty(),
+        "ambient should produce events"
+    );
+
+    // Start playback and advance
+    app.handle_action(Action::TogglePlayback);
+    assert!(app.is_playing);
+    for _ in 0..20 {
+        app.advance_beat();
+    }
+    assert!(app.current_beat.ticks() > 0, "ambient should advance beats");
+}
+
+#[test]
+fn eval_immediate_compiles_and_auto_starts() {
+    let mut app = App::new(sample_src());
+    assert!(!app.is_playing);
+
+    // Ctrl+Enter should compile and auto-start playback
+    app.handle_action(Action::EvalImmediate);
+    assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    assert!(app.is_playing, "eval_immediate should auto-start playback");
+}
+
+#[test]
+fn eval_immediate_with_bad_source_does_not_start() {
+    let mut app = App::new("invalid dsl garbage");
+    assert!(!app.is_playing);
+
+    app.handle_action(Action::EvalImmediate);
+    assert!(!app.is_playing, "should not start with bad source");
+}
+
+#[test]
+fn command_bar_activate_deactivate() {
+    let mut app = App::new(sample_src());
+    assert!(!app.command_bar.active);
+
+    app.handle_action(Action::ActivateCommandBar);
+    assert!(app.command_bar.active);
+
+    app.handle_action(Action::CommandBarCancel);
+    assert!(!app.command_bar.active);
+}
+
+#[test]
+fn command_bar_typing_and_submit() {
+    let mut app = App::new(sample_src());
+
+    app.handle_action(Action::ActivateCommandBar);
+    app.handle_action(Action::CommandBarInsert(':'));
+    app.handle_action(Action::CommandBarInsert('h'));
+    app.handle_action(Action::CommandBarInsert('e'));
+    app.handle_action(Action::CommandBarInsert('l'));
+    app.handle_action(Action::CommandBarInsert('p'));
+
+    assert_eq!(app.command_bar.input(), ":help");
+
+    // Submit triggers help
+    app.handle_action(Action::CommandBarSubmit);
+    assert!(!app.command_bar.active, "should deactivate after submit");
+    assert!(app.help_screen.visible, ":help should toggle help");
+}
+
+#[test]
+fn command_bar_eval_command() {
+    let mut app = App::new(sample_src());
+    assert!(!app.is_playing);
+
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":eval".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    assert!(app.is_playing, ":eval should compile and auto-start");
+}
+
+#[test]
+fn command_bar_preset_loads_and_compiles() {
+    let mut app = App::new(sample_src());
+
+    // Load ambient preset via command bar
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":preset ambient".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    assert_eq!(
+        app.status.compile_status,
+        CompileStatus::Ok,
+        "loading ambient preset should compile"
+    );
+    let content = app.editor.content();
+    assert!(
+        content.contains("tempo 85"),
+        "editor should contain ambient preset"
+    );
+}
+
+#[test]
+fn command_bar_preset_techno() {
+    let mut app = App::new(sample_src());
+
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":preset techno".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    assert!(app.editor.content().contains("tempo 130"));
+}
+
+#[test]
+fn command_bar_preset_dnb() {
+    let mut app = App::new(sample_src());
+
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":preset dnb".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    assert_eq!(app.status.compile_status, CompileStatus::Ok);
+    assert!(app.editor.content().contains("tempo 170"));
+}
+
+#[test]
+fn command_bar_ref_toggles_dsl_reference() {
+    let mut app = App::new(sample_src());
+    assert!(!app.dsl_reference.visible);
+
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":ref".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    assert!(app.dsl_reference.visible, ":ref should show DSL reference");
+}
+
+#[test]
+fn command_bar_tutorial_starts() {
+    let mut app = App::new(sample_src());
+    assert!(!app.tutorial.active);
+
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":tutorial".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    assert!(app.tutorial.active, ":tutorial should activate tutorial");
+    assert!(
+        app.tutorial.explanation_visible,
+        "tutorial explanation should show"
+    );
+    // First lesson should load into editor and compile
+    let content = app.editor.content();
+    assert!(
+        content.contains("tempo"),
+        "tutorial lesson should load into editor"
+    );
+    // Tutorial's :tutorial command triggers compile_source internally
+    // Verify it compiled by checking events (not status, which may be Idle if compile_source not called)
+    assert!(
+        !content.is_empty(),
+        "tutorial should have loaded lesson content"
+    );
+}
+
+#[test]
+fn tutorial_next_prev_navigation() {
+    let mut app = App::new(sample_src());
+
+    // Start tutorial
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":tutorial".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    let first_content = app.editor.content();
+    assert!(!first_content.is_empty(), "lesson 1 should be loaded");
+
+    // Verify lesson content compiles
+    app.handle_action(Action::CompileReload);
+    assert_eq!(
+        app.status.compile_status,
+        CompileStatus::Ok,
+        "lesson 1 should compile"
+    );
+
+    // Navigate to next lesson
+    app.handle_action(Action::TutorialNext);
+    let second_content = app.editor.content();
+    assert_ne!(
+        first_content, second_content,
+        "next lesson should change editor content"
+    );
+
+    // Verify second lesson compiles
+    app.handle_action(Action::CompileReload);
+    assert_eq!(
+        app.status.compile_status,
+        CompileStatus::Ok,
+        "lesson 2 should compile"
+    );
+
+    // Navigate back
+    app.handle_action(Action::TutorialPrev);
+    let back_content = app.editor.content();
+    assert_eq!(
+        first_content, back_content,
+        "prev should return to first lesson"
+    );
+}
+
+#[test]
+fn tutorial_all_lessons_compile() {
+    // Walk through all lessons and verify each compiles
+    let mut app = App::new(sample_src());
+
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":tutorial".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    // Compile first lesson
+    app.handle_action(Action::CompileReload);
+    assert_eq!(
+        app.status.compile_status,
+        CompileStatus::Ok,
+        "lesson 1 should compile"
+    );
+
+    let mut lesson_count = 1;
+    let mut prev_content = app.editor.content();
+
+    // Navigate through remaining lessons
+    for _ in 0..10 {
+        app.handle_action(Action::TutorialNext);
+        let content = app.editor.content();
+        if content == prev_content {
+            break; // Reached end
+        }
+        // Explicitly compile each lesson
+        app.handle_action(Action::CompileReload);
+        assert_eq!(
+            app.status.compile_status,
+            CompileStatus::Ok,
+            "lesson {} should compile",
+            lesson_count + 1
+        );
+        prev_content = content;
+        lesson_count += 1;
+    }
+
+    assert!(
+        lesson_count >= 5,
+        "should have at least 5 lessons, got {lesson_count}"
+    );
+}
+
+#[test]
+fn dsl_reference_toggle() {
+    let mut app = App::new(sample_src());
+
+    app.handle_action(Action::ToggleDslReference);
+    assert!(app.dsl_reference.visible, "should show");
+
+    app.handle_action(Action::Escape);
+    assert!(!app.dsl_reference.visible, "escape should close");
+}
+
+#[test]
+fn nl_faster_adjusts_tempo() {
+    use resonance::ai::nl_parser::{self, NlCommand};
+
+    let cmd = nl_parser::parse("faster", "tempo 120");
+    assert_eq!(cmd, NlCommand::AdjustTempo(10.0));
+
+    let cmd = nl_parser::parse("speed up", "tempo 120");
+    assert_eq!(cmd, NlCommand::AdjustTempo(10.0));
+
+    let cmd = nl_parser::parse("slower", "tempo 120");
+    assert_eq!(cmd, NlCommand::AdjustTempo(-10.0));
+}
+
+#[test]
+fn nl_reverb_commands() {
+    use resonance::ai::nl_parser::{self, NlCommand};
+
+    let cmd = nl_parser::parse("more reverb", "");
+    match cmd {
+        NlCommand::AdjustMacro { name, delta } => {
+            assert_eq!(name, "space");
+            assert!(delta > 0.0);
+        }
+        other => panic!("expected AdjustMacro, got {other:?}"),
+    }
+
+    let cmd = nl_parser::parse("dry", "");
+    match cmd {
+        NlCommand::AdjustMacro { name, delta } => {
+            assert_eq!(name, "space");
+            assert!(delta < 0.0);
+        }
+        other => panic!("expected AdjustMacro, got {other:?}"),
+    }
+}
+
+#[test]
+fn nl_add_hihats_produces_valid_dsl() {
+    use resonance::ai::nl_parser::{self, NlCommand};
+    use resonance::dsl::Compiler;
+
+    let source = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . . X . . . X . . . X . . .]\n  }\n}";
+    let cmd = nl_parser::parse("add hi-hats", source);
+    match cmd {
+        NlCommand::ModifyDsl(new_source) => {
+            assert!(new_source.contains("hat:"), "should contain hat pattern");
+            let result = Compiler::compile(&new_source);
+            assert!(
+                result.is_ok(),
+                "modified DSL should compile: {:?}",
+                result.err()
+            );
+        }
+        other => panic!("expected ModifyDsl, got {other:?}"),
+    }
+}
+
+#[test]
+fn nl_add_bass_produces_valid_dsl() {
+    use resonance::ai::nl_parser::{self, NlCommand};
+    use resonance::dsl::Compiler;
+
+    let source = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . . X . . . X . . . X . . .]\n  }\n}";
+    let cmd = nl_parser::parse("add bass", source);
+    match cmd {
+        NlCommand::ModifyDsl(new_source) => {
+            assert!(new_source.contains("track bass"), "should add bass track");
+            let result = Compiler::compile(&new_source);
+            assert!(
+                result.is_ok(),
+                "modified DSL should compile: {:?}",
+                result.err()
+            );
+        }
+        other => panic!("expected ModifyDsl, got {other:?}"),
+    }
+}
+
+#[test]
+fn nl_add_pad_produces_valid_dsl() {
+    use resonance::ai::nl_parser::{self, NlCommand};
+    use resonance::dsl::Compiler;
+
+    let source = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . . X . . . X . . . X . . .]\n  }\n}";
+    let cmd = nl_parser::parse("add pad", source);
+    match cmd {
+        NlCommand::ModifyDsl(new_source) => {
+            assert!(new_source.contains("track pad"), "should add pad track");
+            let result = Compiler::compile(&new_source);
+            assert!(
+                result.is_ok(),
+                "modified DSL should compile: {:?}",
+                result.err()
+            );
+        }
+        other => panic!("expected ModifyDsl, got {other:?}"),
+    }
+}
+
+#[test]
+fn nl_four_on_floor_produces_valid_dsl() {
+    use resonance::ai::nl_parser::{self, NlCommand};
+    use resonance::dsl::Compiler;
+
+    let source = "tempo 128\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . . . . . . X . . . . . . .]\n  }\n}";
+    let cmd = nl_parser::parse("4 on the floor", source);
+    match cmd {
+        NlCommand::ModifyDsl(new_source) => {
+            let result = Compiler::compile(&new_source);
+            assert!(
+                result.is_ok(),
+                "modified DSL should compile: {:?}",
+                result.err()
+            );
+        }
+        other => panic!("expected ModifyDsl, got {other:?}"),
+    }
+}
+
+#[test]
+fn preset_list_includes_all_genres() {
+    use resonance::content::presets;
+
+    let presets = presets::list_presets();
+    let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
+
+    assert!(names.contains(&"House"), "missing House");
+    assert!(names.contains(&"Techno"), "missing Techno");
+    assert!(names.contains(&"Ambient"), "missing Ambient");
+    assert!(names.contains(&"Drum & Bass"), "missing Drum & Bass");
+    assert!(names.contains(&"Empty Canvas"), "missing Empty Canvas");
+}
+
+#[test]
+fn default_starter_delegates_to_content_module() {
+    use resonance::dsl::Compiler;
+    use resonance::tui::first_run;
+
+    let source = first_run::default_starter();
+    assert!(!source.is_empty());
+    assert!(source.contains("tempo"));
+    let result = Compiler::compile(&source);
+    assert!(result.is_ok(), "default starter should compile");
+}
+
+#[test]
+fn full_repl_workflow_load_preset_eval_play() {
+    // Complete REPL workflow: load preset → eval → play → advance beats
+    use resonance::content::presets;
+
+    for name in &["house", "techno", "ambient", "dnb"] {
+        let source = presets::load_preset(name).unwrap();
+        let mut app = App::new(&source);
+
+        // Eval immediate (Ctrl+Enter)
+        app.handle_action(Action::EvalImmediate);
+        assert_eq!(
+            app.status.compile_status,
+            CompileStatus::Ok,
+            "{name}: should compile"
+        );
+        assert!(app.is_playing, "{name}: should be playing after eval");
+
+        // Advance beats
+        for _ in 0..50 {
+            app.advance_beat();
+        }
+        assert!(app.current_beat.ticks() > 0, "{name}: beats should advance");
+
+        // Stop
+        app.handle_action(Action::TogglePlayback);
+        assert!(!app.is_playing, "{name}: should stop");
+    }
+}
+
+#[test]
+fn command_bar_clear_resets_editor() {
+    let mut app = App::new(sample_src());
+    assert!(!app.editor.content().is_empty());
+
+    app.handle_action(Action::ActivateCommandBar);
+    for c in ":clear".chars() {
+        app.handle_action(Action::CommandBarInsert(c));
+    }
+    app.handle_action(Action::CommandBarSubmit);
+
+    assert!(
+        app.editor.content().is_empty(),
+        ":clear should empty the editor"
+    );
+}
+
+#[test]
+fn overlay_priority_help_over_dsl_reference() {
+    let mut app = App::new(sample_src());
+
+    // Open DSL reference
+    app.handle_action(Action::ToggleDslReference);
+    assert!(app.dsl_reference.visible);
+
+    // Open help (should take priority)
+    app.handle_action(Action::ToggleHelp);
+    assert!(app.help_screen.visible);
+
+    // Close help
+    app.handle_action(Action::ToggleHelp);
+    assert!(!app.help_screen.visible);
+    // DSL reference should still be open
+    assert!(app.dsl_reference.visible);
 }

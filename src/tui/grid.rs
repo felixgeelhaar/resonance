@@ -76,35 +76,27 @@ pub struct TrackGrid {
     pub steps: usize,
 }
 
-/// Assign a consistent color to a track name by hashing.
-pub fn track_color(name: &str) -> ratatui::style::Color {
-    use ratatui::style::Color;
-    const PALETTE: [Color; 8] = [
-        Color::Cyan,
-        Color::Green,
-        Color::Yellow,
-        Color::Magenta,
-        Color::Blue,
-        Color::Red,
-        Color::LightCyan,
-        Color::LightGreen,
-    ];
+/// Assign a consistent color to a track name by hashing into the theme palette.
+pub fn track_color(name: &str, palette: &[ratatui::style::Color; 8]) -> ratatui::style::Color {
     let hash: u32 = name
         .bytes()
         .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
-    PALETTE[(hash as usize) % PALETTE.len()]
+    palette[(hash as usize) % palette.len()]
 }
 
-/// Map a velocity (0.0-1.0) to a color intensity.
-pub fn velocity_color(velocity: f32, base_color: ratatui::style::Color) -> ratatui::style::Color {
-    use ratatui::style::Color;
+/// Map a velocity (0.0-1.0) to a color intensity using theme colors.
+pub fn velocity_color(
+    velocity: f32,
+    base_color: ratatui::style::Color,
+    bright: ratatui::style::Color,
+    dim: ratatui::style::Color,
+) -> ratatui::style::Color {
     if velocity > 0.7 {
-        // Bright — use the base color as-is (or white for high impact)
-        Color::White
+        bright
     } else if velocity > 0.4 {
         base_color
     } else {
-        Color::DarkGray
+        dim
     }
 }
 
@@ -286,42 +278,75 @@ mod tests {
 
     // --- Track color tests ---
 
+    fn default_palette() -> [ratatui::style::Color; 8] {
+        use ratatui::style::Color;
+        [
+            Color::Cyan,
+            Color::Magenta,
+            Color::Yellow,
+            Color::Green,
+            Color::Blue,
+            Color::Red,
+            Color::LightCyan,
+            Color::LightGreen,
+        ]
+    }
+
     #[test]
     fn track_color_consistent() {
-        let c1 = track_color("drums");
-        let c2 = track_color("drums");
+        let pal = default_palette();
+        let c1 = track_color("drums", &pal);
+        let c2 = track_color("drums", &pal);
         assert_eq!(c1, c2);
     }
 
     #[test]
     fn track_color_different_names() {
-        let c1 = track_color("drums");
-        let c2 = track_color("bass");
+        let pal = default_palette();
+        let c1 = track_color("drums", &pal);
+        let c2 = track_color("bass", &pal);
         // Different names should (likely) produce different colors
         // Not guaranteed but highly likely with 8 colors
         let _ = (c1, c2);
     }
 
+    #[test]
+    fn track_color_uses_palette() {
+        use ratatui::style::Color;
+        let custom_pal = [Color::Rgb(255, 0, 0); 8];
+        let c = track_color("anything", &custom_pal);
+        assert_eq!(c, Color::Rgb(255, 0, 0));
+    }
+
     // --- Velocity color tests ---
 
     #[test]
-    fn velocity_high_is_white() {
+    fn velocity_high_is_bright() {
         use ratatui::style::Color;
-        let c = velocity_color(0.9, Color::Cyan);
+        let c = velocity_color(0.9, Color::Cyan, Color::White, Color::DarkGray);
         assert_eq!(c, Color::White);
     }
 
     #[test]
     fn velocity_mid_is_base() {
         use ratatui::style::Color;
-        let c = velocity_color(0.5, Color::Cyan);
+        let c = velocity_color(0.5, Color::Cyan, Color::White, Color::DarkGray);
         assert_eq!(c, Color::Cyan);
     }
 
     #[test]
     fn velocity_low_is_dim() {
         use ratatui::style::Color;
-        let c = velocity_color(0.2, Color::Cyan);
+        let c = velocity_color(0.2, Color::Cyan, Color::White, Color::DarkGray);
         assert_eq!(c, Color::DarkGray);
+    }
+
+    #[test]
+    fn velocity_uses_theme_colors() {
+        use ratatui::style::Color;
+        let bright = Color::Rgb(255, 255, 0);
+        let dim = Color::Rgb(50, 50, 50);
+        assert_eq!(velocity_color(0.9, Color::Cyan, bright, dim), bright);
+        assert_eq!(velocity_color(0.1, Color::Cyan, bright, dim), dim);
     }
 }

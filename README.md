@@ -64,7 +64,7 @@ On first run, Resonance generates a starter template based on the default style.
 ```bash
 cargo build              # debug
 cargo build --release    # optimized (recommended for audio)
-cargo test               # 380+ tests
+cargo test               # 960+ tests
 cargo clippy             # lint
 ```
 
@@ -88,6 +88,22 @@ Eight layers with clear boundaries:
 | **Event Engine** | Deterministic scheduler with seedable randomness |
 | **Instruments** | Drum kit, bass, poly, pluck, noise — all trait-based |
 | **Audio Engine** | Dedicated thread, lock-free ring buffer, master limiter |
+
+## Plugins
+
+Resonance supports config-based plugins — custom instruments defined by YAML manifests and optional WAV samples. Place plugins in `~/.resonance/plugins/<name>/` with a `plugin.yaml` file. Use `plugin: name` in your DSL to reference them.
+
+See [docs/plugin-guide.md](docs/plugin-guide.md) for details.
+
+## Instrument Packs
+
+Packs bundle kits, plugins, and presets into distributable packages. Place packs in `~/.resonance/packs/<name>/` with a `manifest.yaml`.
+
+See [docs/pack-guide.md](docs/pack-guide.md) for details.
+
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding standards, and the PR process.
 
 ## License
 

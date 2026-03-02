@@ -3,7 +3,7 @@
 use ratatui::style::Color;
 use serde::Deserialize;
 
-use super::Theme;
+use super::{LayoutConfig, Theme};
 
 /// Intermediate YAML representation — all fields optional.
 #[derive(Debug, Deserialize)]
@@ -50,6 +50,21 @@ struct ThemeConfig {
     vu_low: Option<String>,
     vu_mid: Option<String>,
     vu_high: Option<String>,
+
+    layout: Option<LayoutConfigYaml>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LayoutConfigYaml {
+    top_pct: Option<u16>,
+    grid_pct: Option<u16>,
+    bottom_pct: Option<u16>,
+    editor_width_pct: Option<u16>,
+    macros_width_pct: Option<u16>,
+    show_tracks: Option<bool>,
+    show_grid: Option<bool>,
+    show_macros: Option<bool>,
+    show_intent: Option<bool>,
 }
 
 /// Parse a color string: "#RRGGBB" hex or named color.
@@ -159,6 +174,24 @@ fn parse_theme_yaml(yaml: &str) -> Option<Theme> {
         vu_low: color_or(config.vu_low, d.vu_low),
         vu_mid: color_or(config.vu_mid, d.vu_mid),
         vu_high: color_or(config.vu_high, d.vu_high),
+        layout: {
+            let dl = LayoutConfig::default();
+            if let Some(ref ly) = config.layout {
+                LayoutConfig {
+                    top_pct: ly.top_pct.unwrap_or(dl.top_pct),
+                    grid_pct: ly.grid_pct.unwrap_or(dl.grid_pct),
+                    bottom_pct: ly.bottom_pct.unwrap_or(dl.bottom_pct),
+                    editor_width_pct: ly.editor_width_pct.unwrap_or(dl.editor_width_pct),
+                    macros_width_pct: ly.macros_width_pct.unwrap_or(dl.macros_width_pct),
+                    show_tracks: ly.show_tracks.unwrap_or(dl.show_tracks),
+                    show_grid: ly.show_grid.unwrap_or(dl.show_grid),
+                    show_macros: ly.show_macros.unwrap_or(dl.show_macros),
+                    show_intent: ly.show_intent.unwrap_or(dl.show_intent),
+                }
+            } else {
+                dl
+            }
+        },
     })
 }
 
@@ -268,5 +301,58 @@ editor_fg: "#xyz123"
         let theme = parse_theme_yaml(yaml).unwrap();
         let d = super::super::builtin::default();
         assert_eq!(theme.editor_fg, d.editor_fg);
+    }
+
+    #[test]
+    fn partial_layout_yaml_fills_defaults() {
+        let yaml = r##"
+name: "WithLayout"
+layout:
+  top_pct: 45
+  show_grid: false
+"##;
+        let theme = parse_theme_yaml(yaml).unwrap();
+        assert_eq!(theme.layout.top_pct, 45);
+        assert_eq!(theme.layout.grid_pct, 30); // default
+        assert!(!theme.layout.show_grid);
+        assert!(theme.layout.show_tracks); // default
+    }
+
+    #[test]
+    fn full_layout_yaml_parses() {
+        let yaml = r##"
+name: "FullLayout"
+layout:
+  top_pct: 50
+  grid_pct: 25
+  bottom_pct: 15
+  editor_width_pct: 60
+  macros_width_pct: 40
+  show_tracks: false
+  show_grid: true
+  show_macros: true
+  show_intent: false
+"##;
+        let theme = parse_theme_yaml(yaml).unwrap();
+        assert_eq!(theme.layout.top_pct, 50);
+        assert_eq!(theme.layout.grid_pct, 25);
+        assert_eq!(theme.layout.bottom_pct, 15);
+        assert_eq!(theme.layout.editor_width_pct, 60);
+        assert_eq!(theme.layout.macros_width_pct, 40);
+        assert!(!theme.layout.show_tracks);
+        assert!(theme.layout.show_grid);
+        assert!(theme.layout.show_macros);
+        assert!(!theme.layout.show_intent);
+    }
+
+    #[test]
+    fn no_layout_section_uses_defaults() {
+        let yaml = r##"
+name: "NoLayout"
+editor_fg: "#ff0000"
+"##;
+        let theme = parse_theme_yaml(yaml).unwrap();
+        assert_eq!(theme.layout.top_pct, 40);
+        assert!(theme.layout.show_grid);
     }
 }

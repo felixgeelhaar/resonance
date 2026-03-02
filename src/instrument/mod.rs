@@ -18,11 +18,12 @@ pub use noise_gen::NoiseGen;
 pub use pluck_synth::PluckSynth;
 pub use poly_synth::PolySynth;
 pub use router::InstrumentRouter;
-pub use sample::{SampleData, SampleError};
+pub use sample::{load_kit_from_directory, SampleData, SampleError};
 pub use synth::build_default_kit;
 
 use crate::event::{Event, RenderContext};
 use std::collections::HashMap;
+use std::path::Path;
 
 /// Common interface for all instruments in Resonance.
 ///
@@ -37,7 +38,7 @@ pub trait Instrument: Send {
 }
 
 /// A named collection of audio samples.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SampleBank {
     samples: HashMap<String, SampleData>,
 }
@@ -75,6 +76,38 @@ impl Default for SampleBank {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Resolve a kit name to a [`SampleBank`].
+///
+/// - `"default"` → synthetic default kit via [`build_default_kit`]
+/// - Name containing `/` or `.` → treat as directory path, load WAV files
+/// - Otherwise → look in `~/.resonance/kits/<name>/`, fallback to default
+pub fn resolve_kit(name: &str, sample_rate: u32, seed: u64) -> Result<SampleBank, SampleError> {
+    if name == "default" {
+        return Ok(build_default_kit(sample_rate, seed));
+    }
+
+    // Path-like names: load from directory
+    if name.contains('/') || name.contains('.') {
+        return load_kit_from_directory(Path::new(name), sample_rate);
+    }
+
+    // Named kit: check ~/.resonance/kits/<name>/
+    if let Some(home) = dirs::home_dir() {
+        let kit_dir = home.join(".resonance").join("kits").join(name);
+        if kit_dir.is_dir() {
+            return load_kit_from_directory(&kit_dir, sample_rate);
+        }
+    }
+
+    // Check installed packs for the kit name
+    if let Some(kit_path) = crate::content::packs::resolve_kit_from_packs(name) {
+        return load_kit_from_directory(&kit_path, sample_rate);
+    }
+
+    // Fallback to default
+    Ok(build_default_kit(sample_rate, seed))
 }
 
 #[cfg(test)]
@@ -129,5 +162,46 @@ mod tests {
     fn default_is_empty() {
         let bank = SampleBank::default();
         assert!(bank.is_empty());
+    }
+
+    // --- resolve_kit tests ---
+
+    #[test]
+    fn resolve_kit_default() {
+        let bank = resolve_kit("default", 44100, 42).unwrap();
+        assert!(!bank.is_empty());
+    }
+
+    #[test]
+    fn resolve_kit_path_to_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write a WAV file
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: 44100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let wav_path = dir.path().join("kick.wav");
+        let mut writer = hound::WavWriter::create(&wav_path, spec).unwrap();
+        writer.write_sample(0.5f32).unwrap();
+        writer.finalize().unwrap();
+
+        let bank = resolve_kit(dir.path().to_str().unwrap(), 44100, 42).unwrap();
+        assert!(bank.get("kick").is_some());
+    }
+
+    #[test]
+    fn resolve_kit_nonexistent_fallback() {
+        // Non-path name that doesn't exist in ~/.resonance/kits/ → fallback to default
+        let bank = resolve_kit("nonexistent_kit_name", 44100, 42).unwrap();
+        assert!(!bank.is_empty()); // Should get default kit
+    }
+
+    #[test]
+    fn resolve_kit_path_detection() {
+        // Names with / or . are treated as paths
+        assert!(resolve_kit("./nonexistent_dir", 44100, 42).is_err());
+        assert!(resolve_kit("../nonexistent_dir", 44100, 42).is_err());
     }
 }

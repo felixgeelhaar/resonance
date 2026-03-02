@@ -6,6 +6,10 @@ rust-version = "1.75"
 description = "A terminal-native live coding music instrument"
 license = "MIT"
 
+[features]
+default = []
+llm = ["dep:reqwest", "dep:serde_json"]
+
 [dependencies]
 cpal = "0.15"
 ratatui = "0.30"
@@ -21,6 +25,8 @@ midir = "0.10"
 rosc = "0.11"
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"
+reqwest = { version = "0.12", features = ["json", "blocking"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [dev-dependencies]
 assert_approx_eq = "1.1"

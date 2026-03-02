@@ -309,6 +309,7 @@ impl Lexer {
             "noise" => TokenKind::Noise,
             "vel" => TokenKind::Vel,
             "bars" => TokenKind::Bars,
+            "plugin" => TokenKind::Plugin,
             _ => TokenKind::Ident(s),
         };
 
@@ -700,6 +701,15 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         assert_eq!(tokens.len(), 1);
         assert_eq!(tokens[0].kind, TokenKind::Eof);
+    }
+
+    #[test]
+    fn lex_plugin_keyword() {
+        let mut lexer = Lexer::new("plugin: warm_pad");
+        let tokens = lexer.tokenize().unwrap();
+        assert_eq!(tokens[0].kind, TokenKind::Plugin);
+        assert_eq!(tokens[1].kind, TokenKind::Colon);
+        assert_eq!(tokens[2].kind, TokenKind::Ident("warm_pad".to_string()));
     }
 
     #[test]

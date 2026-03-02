@@ -2,7 +2,7 @@
 
 use ratatui::style::Color;
 
-use super::Theme;
+use super::{LayoutConfig, Theme};
 
 /// Default theme — matches the original hardcoded colors.
 pub fn default() -> Theme {
@@ -58,6 +58,7 @@ pub fn default() -> Theme {
         vu_low: Color::Green,
         vu_mid: Color::Yellow,
         vu_high: Color::Red,
+        layout: LayoutConfig::default(),
     }
 }
 
@@ -115,6 +116,7 @@ pub fn catppuccin_mocha() -> Theme {
         vu_low: Color::Rgb(166, 227, 161),          // green
         vu_mid: Color::Rgb(249, 226, 175),          // yellow
         vu_high: Color::Rgb(243, 139, 168),         // red
+        layout: LayoutConfig::default(),
     }
 }
 
@@ -172,6 +174,7 @@ pub fn gruvbox_dark() -> Theme {
         vu_low: Color::Rgb(184, 187, 38),           // green
         vu_mid: Color::Rgb(250, 189, 47),           // yellow
         vu_high: Color::Rgb(251, 73, 52),           // red
+        layout: LayoutConfig::default(),
     }
 }
 
@@ -229,6 +232,7 @@ pub fn minimal() -> Theme {
         vu_low: Color::LightGreen,
         vu_mid: Color::LightYellow,
         vu_high: Color::LightRed,
+        layout: LayoutConfig::default(),
     }
 }
 
@@ -286,6 +290,7 @@ pub fn strudel() -> Theme {
         vu_low: Color::Rgb(102, 204, 102),
         vu_mid: Color::Rgb(255, 204, 0),
         vu_high: Color::Rgb(255, 80, 80),
+        layout: LayoutConfig::default(),
     }
 }
 

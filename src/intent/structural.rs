@@ -85,12 +85,29 @@ impl StructuralIntentProcessor {
         }
     }
 
+    /// Accept the pending intent. Returns the proposed source if there was one.
+    pub fn accept_pending(&mut self) -> Option<String> {
+        if let Some(mut intent) = self.pending.take() {
+            let source = intent.proposed_source.clone();
+            intent.state = StructuralIntentState::Accepted;
+            self.history.push(intent);
+            Some(source)
+        } else {
+            None
+        }
+    }
+
     /// Reject the pending intent.
     pub fn reject(&mut self) {
         if let Some(mut intent) = self.pending.take() {
             intent.state = StructuralIntentState::Rejected;
             self.history.push(intent);
         }
+    }
+
+    /// Reject the pending intent (alias for reject).
+    pub fn reject_pending(&mut self) {
+        self.reject();
     }
 
     /// Mark the last accepted intent as failed.

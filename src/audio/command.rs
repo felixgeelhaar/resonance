@@ -12,6 +12,9 @@ pub enum AudioCommand {
 
     /// Stop playback and clear buffers.
     Stop,
+
+    /// Set a master effect parameter by name and value.
+    SetEffectParam(String, f32),
 }
 
 #[cfg(test)]
@@ -61,6 +64,24 @@ mod tests {
 
         let cmd = cons.try_pop().unwrap();
         assert!(matches!(cmd, AudioCommand::Stop));
+    }
+
+    #[test]
+    fn test_command_send_receive_effect_param() {
+        let rb = HeapRb::<AudioCommand>::new(16);
+        let (mut prod, mut cons) = rb.split();
+
+        prod.try_push(AudioCommand::SetEffectParam("reverb_mix".to_string(), 0.4))
+            .unwrap();
+
+        let cmd = cons.try_pop().unwrap();
+        match cmd {
+            AudioCommand::SetEffectParam(name, val) => {
+                assert_eq!(name, "reverb_mix");
+                assert!((val - 0.4).abs() < f32::EPSILON);
+            }
+            _ => panic!("expected SetEffectParam command"),
+        }
     }
 
     #[test]

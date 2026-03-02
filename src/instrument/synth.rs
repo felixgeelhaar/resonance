@@ -168,13 +168,12 @@ pub fn build_default_kit(sample_rate: u32, seed: u64) -> SampleBank {
         "snare",
         SampleData::from_mono(generate_snare(sample_rate, seed), sample_rate),
     );
-    bank.insert(
-        "hat",
-        SampleData::from_mono(
-            generate_hihat(sample_rate, seed.wrapping_add(1)),
-            sample_rate,
-        ),
+    let hihat_data = SampleData::from_mono(
+        generate_hihat(sample_rate, seed.wrapping_add(1)),
+        sample_rate,
     );
+    bank.insert("hat", hihat_data.clone());
+    bank.insert("hihat", hihat_data);
     bank.insert(
         "clap",
         SampleData::from_mono(
@@ -322,10 +321,11 @@ mod tests {
     #[test]
     fn build_default_kit_has_all_samples() {
         let bank = build_default_kit(SR, SEED);
-        assert_eq!(bank.len(), 4);
+        assert_eq!(bank.len(), 5);
         assert!(bank.get("kick").is_some());
         assert!(bank.get("snare").is_some());
         assert!(bank.get("hat").is_some());
+        assert!(bank.get("hihat").is_some());
         assert!(bank.get("clap").is_some());
     }
 

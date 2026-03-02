@@ -25,6 +25,7 @@ const KEYWORDS: &[&str] = &[
     "sidechain",
     "limiter",
     "enabled",
+    "plugin",
 ];
 
 /// Highlight a single line of DSL source into styled spans.

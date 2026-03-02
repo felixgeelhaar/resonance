@@ -1,6 +1,9 @@
 //! Sample data type — WAV loading, mono conversion, and linear-interpolation resampling.
 
 use std::io::{Read, Seek};
+use std::path::Path;
+
+use super::SampleBank;
 
 /// Errors that can occur when loading or converting samples.
 #[derive(Debug)]
@@ -11,6 +14,8 @@ pub enum SampleError {
     Empty,
     /// Unsupported bit depth or format.
     UnsupportedFormat(String),
+    /// Filesystem I/O error.
+    Io(std::io::Error),
 }
 
 impl std::fmt::Display for SampleError {
@@ -19,6 +24,7 @@ impl std::fmt::Display for SampleError {
             SampleError::Wav(e) => write!(f, "WAV error: {e}"),
             SampleError::Empty => write!(f, "WAV file contains no samples"),
             SampleError::UnsupportedFormat(s) => write!(f, "unsupported format: {s}"),
+            SampleError::Io(e) => write!(f, "I/O error: {e}"),
         }
     }
 }
@@ -28,6 +34,12 @@ impl std::error::Error for SampleError {}
 impl From<hound::Error> for SampleError {
     fn from(e: hound::Error) -> Self {
         SampleError::Wav(e)
+    }
+}
+
+impl From<std::io::Error> for SampleError {
+    fn from(e: std::io::Error) -> Self {
+        SampleError::Io(e)
     }
 }
 
@@ -116,6 +128,52 @@ impl SampleData {
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
+}
+
+/// Load all `.wav` files from a directory into a [`SampleBank`].
+///
+/// Each file's stem becomes the sample name (e.g. `kick.wav` → `"kick"`).
+/// Non-WAV files are silently ignored. An empty directory yields `SampleError::Empty`.
+pub fn load_kit_from_directory(
+    dir: &Path,
+    target_sample_rate: u32,
+) -> Result<SampleBank, SampleError> {
+    let mut bank = SampleBank::new();
+
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+
+        if !path.is_file() {
+            continue;
+        }
+
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        if ext != "wav" {
+            continue;
+        }
+
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let file = std::fs::File::open(&path)?;
+        let reader = std::io::BufReader::new(file);
+        let sample = SampleData::from_wav(reader, target_sample_rate)?;
+        bank.insert(name, sample);
+    }
+
+    if bank.is_empty() {
+        return Err(SampleError::Empty);
+    }
+
+    Ok(bank)
 }
 
 /// Linear-interpolation resampling from `source_rate` to `target_rate`.
@@ -288,5 +346,94 @@ mod tests {
         let output = resample_linear(&[0.5], 44100, 22050);
         assert_eq!(output.len(), 1);
         assert!((output[0] - 0.5).abs() < 1e-6);
+    }
+
+    // --- load_kit_from_directory tests ---
+
+    /// Helper: write a WAV file to disk.
+    fn write_wav_file(path: &std::path::Path, samples: &[f32], sample_rate: u32) {
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(path, spec).unwrap();
+        for &s in samples {
+            writer.write_sample(s).unwrap();
+        }
+        writer.finalize().unwrap();
+    }
+
+    #[test]
+    fn load_kit_from_directory_with_wavs() {
+        let dir = tempfile::tempdir().unwrap();
+        write_wav_file(&dir.path().join("kick.wav"), &[0.5, 0.3, 0.1], 44100);
+        write_wav_file(&dir.path().join("snare.wav"), &[0.8, 0.6], 44100);
+
+        let bank = load_kit_from_directory(dir.path(), 44100).unwrap();
+        assert_eq!(bank.len(), 2);
+        assert!(bank.get("kick").is_some());
+        assert!(bank.get("snare").is_some());
+    }
+
+    #[test]
+    fn load_kit_from_directory_empty_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_kit_from_directory(dir.path(), 44100);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), SampleError::Empty));
+    }
+
+    #[test]
+    fn load_kit_from_directory_non_wav_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        write_wav_file(&dir.path().join("kick.wav"), &[0.5], 44100);
+        std::fs::write(dir.path().join("readme.txt"), "not a wav").unwrap();
+        std::fs::write(dir.path().join("data.json"), "{}").unwrap();
+
+        let bank = load_kit_from_directory(dir.path(), 44100).unwrap();
+        assert_eq!(bank.len(), 1);
+        assert!(bank.get("kick").is_some());
+    }
+
+    #[test]
+    fn load_kit_from_directory_stereo_downmix() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pad.wav");
+
+        // Write stereo WAV
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 44100,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).unwrap();
+        // L=0.8, R=0.2 → mono=0.5
+        writer.write_sample(0.8f32).unwrap();
+        writer.write_sample(0.2f32).unwrap();
+        writer.finalize().unwrap();
+
+        let bank = load_kit_from_directory(dir.path(), 44100).unwrap();
+        let pad = bank.get("pad").unwrap();
+        assert!((pad.samples()[0] - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn load_kit_from_directory_resample() {
+        let dir = tempfile::tempdir().unwrap();
+        // Write at 22050, load at 44100 — should resample
+        write_wav_file(
+            &dir.path().join("hit.wav"),
+            &(0..50).map(|i| (i as f32 / 50.0).sin()).collect::<Vec<_>>(),
+            22050,
+        );
+
+        let bank = load_kit_from_directory(dir.path(), 44100).unwrap();
+        let hit = bank.get("hit").unwrap();
+        // Should be roughly doubled in length
+        assert!(hit.len() >= 90 && hit.len() <= 110);
+        assert_eq!(hit.sample_rate(), 44100);
     }
 }

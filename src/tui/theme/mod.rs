@@ -5,6 +5,36 @@ pub mod config;
 
 use ratatui::style::Color;
 
+/// Layout configuration — panel sizing and visibility.
+#[derive(Debug, Clone)]
+pub struct LayoutConfig {
+    pub top_pct: u16,
+    pub grid_pct: u16,
+    pub bottom_pct: u16,
+    pub editor_width_pct: u16,
+    pub macros_width_pct: u16,
+    pub show_tracks: bool,
+    pub show_grid: bool,
+    pub show_macros: bool,
+    pub show_intent: bool,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            top_pct: 40,
+            grid_pct: 30,
+            bottom_pct: 20,
+            editor_width_pct: 70,
+            macros_width_pct: 50,
+            show_tracks: true,
+            show_grid: true,
+            show_macros: true,
+            show_intent: true,
+        }
+    }
+}
+
 /// A complete color theme for the TUI.
 #[derive(Debug, Clone)]
 pub struct Theme {
@@ -61,6 +91,9 @@ pub struct Theme {
     pub vu_low: Color,
     pub vu_mid: Color,
     pub vu_high: Color,
+
+    // Layout
+    pub layout: LayoutConfig,
 }
 
 /// Load a theme: tries YAML config first, falls back to the default builtin.
@@ -137,5 +170,25 @@ mod tests {
         let theme = builtin::default();
         let next = cycle_theme(&theme, &[]);
         assert_eq!(next.name, theme.name);
+    }
+
+    #[test]
+    fn layout_config_default_valid() {
+        let layout = LayoutConfig::default();
+        assert_eq!(layout.top_pct, 40);
+        assert_eq!(layout.grid_pct, 30);
+        assert_eq!(layout.bottom_pct, 20);
+        assert_eq!(layout.editor_width_pct, 70);
+        assert_eq!(layout.macros_width_pct, 50);
+        assert!(layout.show_tracks);
+        assert!(layout.show_grid);
+        assert!(layout.show_macros);
+        assert!(layout.show_intent);
+    }
+
+    #[test]
+    fn theme_includes_layout() {
+        let theme = builtin::default();
+        assert_eq!(theme.layout.top_pct, 40);
     }
 }

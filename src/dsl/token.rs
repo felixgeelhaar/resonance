@@ -26,6 +26,7 @@ pub enum TokenKind {
     Noise,
     Vel,
     Bars,
+    Plugin,
 
     // Literals
     Ident(String),

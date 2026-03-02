@@ -7,6 +7,7 @@ use ringbuf::traits::Consumer;
 use ringbuf::HeapCons;
 
 use super::command::AudioCommand;
+use super::effects::MasterEffects;
 use super::limiter::Limiter;
 
 /// Threshold (in samples) at which consumed samples are compacted.
@@ -19,6 +20,7 @@ pub struct AudioCallback {
     playback_buffer: Vec<f32>,
     read_pos: usize,
     volume: f32,
+    effects: MasterEffects,
     limiter: Limiter,
     channels: u16,
     sample_rate: u32,
@@ -32,6 +34,7 @@ impl AudioCallback {
             playback_buffer: Vec::with_capacity(sample_rate as usize * channels as usize),
             read_pos: 0,
             volume: 1.0,
+            effects: MasterEffects::new(sample_rate),
             limiter: Limiter::default(),
             channels,
             sample_rate,
@@ -53,6 +56,15 @@ impl AudioCallback {
                     self.playback_buffer.clear();
                     self.read_pos = 0;
                 }
+                AudioCommand::SetEffectParam(name, value) => {
+                    match name.as_str() {
+                        "reverb_mix" => self.effects.reverb.set_mix(value),
+                        "reverb_decay" => self.effects.reverb.set_decay(value),
+                        "delay_mix" => self.effects.delay.set_mix(value),
+                        "delay_feedback" => self.effects.delay.set_feedback(value),
+                        _ => {} // Unknown param — ignore
+                    }
+                }
             }
         }
 
@@ -73,10 +85,13 @@ impl AudioCallback {
             *sample = 0.0;
         }
 
-        // 3. Apply master limiter.
+        // 3. Apply master effects (reverb then delay).
+        self.effects.process_block(output);
+
+        // 4. Apply master limiter.
         self.limiter.process_block(output);
 
-        // 4. Compact playback buffer when enough has been consumed.
+        // 5. Compact playback buffer when enough has been consumed.
         if self.read_pos >= COMPACT_THRESHOLD {
             self.playback_buffer.drain(..self.read_pos);
             self.read_pos = 0;
@@ -265,5 +280,102 @@ mod tests {
         callback.process(&mut output2);
         assert!((output2[0] - 0.5).abs() < 1e-6);
         assert!((output2[3] - 0.8).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_callback_set_effect_param_reverb() {
+        let (mut prod, mut callback) = setup(16);
+
+        prod.try_push(AudioCommand::SetEffectParam("reverb_mix".to_string(), 0.5))
+            .unwrap();
+
+        // Process to drain commands
+        let mut output = vec![0.0f32; 4];
+        callback.process(&mut output);
+
+        assert!((callback.effects.reverb.mix() - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_callback_set_effect_param_delay() {
+        let (mut prod, mut callback) = setup(16);
+
+        prod.try_push(AudioCommand::SetEffectParam("delay_mix".to_string(), 0.3))
+            .unwrap();
+        prod.try_push(AudioCommand::SetEffectParam(
+            "delay_feedback".to_string(),
+            0.6,
+        ))
+        .unwrap();
+
+        let mut output = vec![0.0f32; 4];
+        callback.process(&mut output);
+
+        assert!((callback.effects.delay.mix() - 0.3).abs() < f32::EPSILON);
+        assert!((callback.effects.delay.feedback() - 0.6).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_callback_effects_applied_in_chain() {
+        let (mut prod, mut callback) = setup(16);
+
+        // Enable reverb
+        prod.try_push(AudioCommand::SetEffectParam("reverb_mix".to_string(), 0.4))
+            .unwrap();
+
+        // Send an impulse
+        let mut samples = vec![0.0f32; 4096];
+        samples[0] = 0.8;
+        samples[1] = 0.8;
+        prod.try_push(AudioCommand::Samples(samples)).unwrap();
+
+        let mut output = vec![0.0f32; 4096];
+        callback.process(&mut output);
+
+        // Should have reverb tail energy in later part of buffer
+        let tail_energy: f32 = output[2000..].iter().map(|s| s * s).sum();
+        assert!(
+            tail_energy > 1e-10,
+            "effects should add tail: {tail_energy}"
+        );
+    }
+
+    #[test]
+    fn test_callback_unknown_effect_param_noop() {
+        let (mut prod, mut callback) = setup(16);
+
+        prod.try_push(AudioCommand::SetEffectParam(
+            "nonexistent_param".to_string(),
+            0.5,
+        ))
+        .unwrap();
+
+        // Should not panic
+        let mut output = vec![0.0f32; 4];
+        callback.process(&mut output);
+    }
+
+    #[test]
+    fn test_callback_effects_between_volume_and_limiter() {
+        let (mut prod, mut callback) = setup(16);
+
+        // Set reverb mix — effects should run after volume, before limiter
+        prod.try_push(AudioCommand::SetEffectParam("reverb_mix".to_string(), 0.3))
+            .unwrap();
+        prod.try_push(AudioCommand::SetVolume(0.8)).unwrap();
+
+        let mut samples = vec![0.0f32; 256];
+        samples[0] = 1.0;
+        samples[1] = 1.0;
+        prod.try_push(AudioCommand::Samples(samples)).unwrap();
+
+        let mut output = vec![0.0f32; 256];
+        callback.process(&mut output);
+
+        // Volume should scale first (1.0 * 0.8 = 0.8), then reverb adds wet
+        // All values should be within limiter ceiling (0.95)
+        for &s in &output {
+            assert!(s.abs() <= 0.95 + 1e-6, "limiter should cap: {s}");
+        }
     }
 }

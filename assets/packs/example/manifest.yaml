@@ -1,0 +1,40 @@
+# Example Instrument Pack for Resonance
+#
+# Place packs in ~/.resonance/packs/<pack_name>/
+# Each pack must contain a manifest.yaml (this file).
+#
+# Directory structure:
+#   my_pack/
+#     manifest.yaml          # This file (required)
+#     samples/               # Kit sample directories (optional)
+#       808/
+#         kick.wav
+#         snare.wav
+#         hat.wav
+#     plugins/               # Plugin instrument directories (optional)
+#       warm_pad/
+#         plugin.yaml
+#     presets/               # DSL preset files (optional)
+#       groove.dsl
+
+name: "example_pack"
+version: "1.0.0"
+author: "Resonance"
+description: "Example pack demonstrating the pack format"
+genre: "electronic"
+
+# Kits: map of kit name to sample file list
+kits:
+  808:
+    - kick.wav
+    - snare.wav
+    - hat.wav
+    - clap.wav
+
+# Plugins: list of plugin directory names under plugins/
+plugins:
+  - warm_pad
+
+# Presets: list of .dsl files under presets/
+presets:
+  - groove.dsl

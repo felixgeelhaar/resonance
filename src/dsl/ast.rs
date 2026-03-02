@@ -28,6 +28,7 @@ pub enum InstrumentRef {
     Poly,
     Pluck,
     Noise,
+    Plugin(String),
 }
 
 /// A section within a track.

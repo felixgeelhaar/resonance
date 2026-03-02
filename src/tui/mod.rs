@@ -136,6 +136,7 @@ pub struct App {
     pub theme: theme::Theme,
     available_themes: Vec<theme::Theme>,
     pub peak_level: f32,
+    plugin_registry: crate::plugin::registry::PluginRegistry,
 }
 
 impl App {
@@ -199,6 +200,7 @@ impl App {
             theme: loaded_theme,
             available_themes,
             peak_level: 0.0,
+            plugin_registry: crate::plugin::registry::PluginRegistry::scan_default(),
         }
     }
 
@@ -716,6 +718,7 @@ impl App {
                     &song.track_defs,
                     sample_rate,
                     seed,
+                    &self.plugin_registry,
                 );
                 let mut scheduler =
                     EventScheduler::new(song.tempo, sample_rate, channels, 1024, seed);
@@ -898,6 +901,51 @@ impl App {
                             format!("theme: {}", t.name),
                             self.current_beat.as_beats_f64(),
                         );
+                    }
+                }
+                "plugins" => {
+                    let plugins = self.plugin_registry.list();
+                    if plugins.is_empty() {
+                        self.intent_console
+                            .log("(no plugins installed)", self.current_beat.as_beats_f64());
+                    } else {
+                        for p in &plugins {
+                            self.intent_console.log(
+                                format!(
+                                    "plugin: {} v{}{}",
+                                    p.name,
+                                    p.version,
+                                    p.description
+                                        .as_ref()
+                                        .map(|d| format!(" — {d}"))
+                                        .unwrap_or_default()
+                                ),
+                                self.current_beat.as_beats_f64(),
+                            );
+                        }
+                    }
+                }
+                "packs" => {
+                    let packs = crate::content::packs::PackManager::default_manager().list();
+                    if packs.is_empty() {
+                        self.intent_console
+                            .log("(no packs installed)", self.current_beat.as_beats_f64());
+                    } else {
+                        for (_, manifest) in &packs {
+                            self.intent_console.log(
+                                format!(
+                                    "pack: {} v{}{}",
+                                    manifest.name,
+                                    manifest.version,
+                                    manifest
+                                        .description
+                                        .as_ref()
+                                        .map(|d| format!(" — {d}"))
+                                        .unwrap_or_default()
+                                ),
+                                self.current_beat.as_beats_f64(),
+                            );
+                        }
                     }
                 }
                 _ if cmd.starts_with("preset ") => {
@@ -1111,21 +1159,34 @@ impl App {
         let cmd_bar_height = if self.command_bar.active { 1 } else { 0 };
 
         // Main vertical layout
+        let grid_constraint = if self.theme.layout.show_grid {
+            Constraint::Percentage(self.theme.layout.grid_pct)
+        } else {
+            Constraint::Length(0)
+        };
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Percentage(40),         // Editor + Tracks
-                Constraint::Percentage(30),         // Grid
-                Constraint::Percentage(20),         // Macros + Intent Console
-                Constraint::Length(cmd_bar_height), // Command bar (conditional)
-                Constraint::Length(1),              // Status bar
+                Constraint::Percentage(self.theme.layout.top_pct), // Editor + Tracks
+                grid_constraint,                                   // Grid
+                Constraint::Percentage(self.theme.layout.bottom_pct), // Macros + Intent Console
+                Constraint::Length(cmd_bar_height),                // Command bar (conditional)
+                Constraint::Length(1),                             // Status bar
             ])
             .split(size);
 
         // Top row: Editor + Tracks
+        let top_constraints = if self.theme.layout.show_tracks {
+            [
+                Constraint::Percentage(self.theme.layout.editor_width_pct),
+                Constraint::Percentage(100 - self.theme.layout.editor_width_pct),
+            ]
+        } else {
+            [Constraint::Percentage(100), Constraint::Length(0)]
+        };
         let top = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+            .constraints(top_constraints)
             .split(chunks[0]);
 
         self.draw_editor(frame, top[0]);
@@ -1135,9 +1196,19 @@ impl App {
         self.draw_grid(frame, chunks[1]);
 
         // Bottom row: Macros + Intent Console
+        let bottom_constraints = if !self.theme.layout.show_macros {
+            [Constraint::Length(0), Constraint::Percentage(100)]
+        } else if !self.theme.layout.show_intent {
+            [Constraint::Percentage(100), Constraint::Length(0)]
+        } else {
+            [
+                Constraint::Percentage(self.theme.layout.macros_width_pct),
+                Constraint::Percentage(100 - self.theme.layout.macros_width_pct),
+            ]
+        };
         let bottom = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .constraints(bottom_constraints)
             .split(chunks[2]);
 
         self.draw_macros(frame, bottom[0]);

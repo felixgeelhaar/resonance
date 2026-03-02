@@ -5,8 +5,11 @@ use std::collections::HashMap;
 use crate::dsl::ast::{InstrumentRef, TrackDef};
 use crate::event::types::TrackId;
 use crate::event::{Event, RenderContext, RenderFn};
+use crate::plugin::registry::PluginRegistry;
 
-use super::{BassSynth, DrumKit, Instrument, NoiseGen, PluckSynth, PolySynth, SampleBank};
+use super::{
+    resolve_kit, BassSynth, DrumKit, Instrument, NoiseGen, PluckSynth, PolySynth, SampleBank,
+};
 
 /// Routes events to the correct instrument based on track ID.
 pub struct InstrumentRouter {
@@ -58,6 +61,41 @@ impl InstrumentRouter {
                 InstrumentRef::Poly => Box::new(PolySynth::new()),
                 InstrumentRef::Pluck => Box::new(PluckSynth::new(seed)),
                 InstrumentRef::Noise => Box::new(NoiseGen::new(seed)),
+                InstrumentRef::Plugin(_) => Box::new(BassSynth::new()), // fallback
+            };
+            router.add_route(*track_id, instrument);
+        }
+
+        router
+    }
+
+    /// Build a router from compiled track definitions, resolving kit names per track.
+    ///
+    /// Unlike [`from_track_defs`], this resolves each track's kit name independently,
+    /// supporting custom WAV sample directories and plugin instruments. On kit resolution
+    /// error, falls back to the synthetic default kit.
+    pub fn from_track_defs_with_kits(
+        defs: &[(TrackId, TrackDef)],
+        sample_rate: u32,
+        seed: u64,
+        plugin_registry: &PluginRegistry,
+    ) -> Self {
+        let mut router = Self::new();
+
+        for (track_id, track_def) in defs {
+            let instrument: Box<dyn Instrument> = match &track_def.instrument {
+                InstrumentRef::Kit(name) => {
+                    let bank = resolve_kit(name, sample_rate, seed)
+                        .unwrap_or_else(|_| super::build_default_kit(sample_rate, seed));
+                    Box::new(DrumKit::new(bank))
+                }
+                InstrumentRef::Bass => Box::new(BassSynth::new()),
+                InstrumentRef::Poly => Box::new(PolySynth::new()),
+                InstrumentRef::Pluck => Box::new(PluckSynth::new(seed)),
+                InstrumentRef::Noise => Box::new(NoiseGen::new(seed)),
+                InstrumentRef::Plugin(name) => plugin_registry
+                    .create_instrument(name, sample_rate)
+                    .unwrap_or_else(|| Box::new(BassSynth::new())),
             };
             router.add_route(*track_id, instrument);
         }
@@ -180,5 +218,102 @@ mod tests {
                 event.track_id
             );
         }
+    }
+
+    #[test]
+    fn from_track_defs_with_kits_routes_correctly() {
+        let defs = vec![
+            (
+                TrackId(0),
+                TrackDef {
+                    name: "drums".to_string(),
+                    instrument: InstrumentRef::Kit("default".to_string()),
+                    sections: vec![],
+                },
+            ),
+            (
+                TrackId(1),
+                TrackDef {
+                    name: "bass".to_string(),
+                    instrument: InstrumentRef::Bass,
+                    sections: vec![],
+                },
+            ),
+        ];
+
+        let registry = PluginRegistry::default();
+        let router = InstrumentRouter::from_track_defs_with_kits(&defs, 44100, 42, &registry);
+
+        let kick = Event::sample(Beat::ZERO, Beat::from_beats(1), TrackId(0), "kick", 0.8);
+        let out = router.render(&kick, &ctx());
+        assert!(!out.is_empty());
+
+        let note = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(1), 36, 0.8);
+        let out = router.render(&note, &ctx());
+        assert!(!out.is_empty());
+    }
+
+    #[test]
+    fn from_track_defs_with_kits_error_fallback() {
+        // Non-existent path should fallback to default kit
+        let defs = vec![(
+            TrackId(0),
+            TrackDef {
+                name: "drums".to_string(),
+                instrument: InstrumentRef::Kit("./nonexistent_path_xyz".to_string()),
+                sections: vec![],
+            },
+        )];
+
+        let registry = PluginRegistry::default();
+        let router = InstrumentRouter::from_track_defs_with_kits(&defs, 44100, 42, &registry);
+
+        let kick = Event::sample(Beat::ZERO, Beat::from_beats(1), TrackId(0), "kick", 0.8);
+        let out = router.render(&kick, &ctx());
+        assert!(!out.is_empty(), "should fallback to default kit");
+    }
+
+    #[test]
+    fn from_track_defs_with_kits_backward_compat() {
+        // Using "default" kit should work the same as from_track_defs
+        let defs = vec![(
+            TrackId(0),
+            TrackDef {
+                name: "drums".to_string(),
+                instrument: InstrumentRef::Kit("default".to_string()),
+                sections: vec![],
+            },
+        )];
+
+        let registry = PluginRegistry::default();
+        let router_old = InstrumentRouter::from_track_defs(&defs, test_bank(), 42);
+        let router_new = InstrumentRouter::from_track_defs_with_kits(&defs, 44100, 42, &registry);
+
+        let kick = Event::sample(Beat::ZERO, Beat::from_beats(1), TrackId(0), "kick", 0.8);
+        let out_old = router_old.render(&kick, &ctx());
+        let out_new = router_new.render(&kick, &ctx());
+
+        assert!(!out_old.is_empty());
+        assert!(!out_new.is_empty());
+    }
+
+    #[test]
+    fn plugin_fallback_to_bass_synth() {
+        // Plugin that doesn't exist should fallback to BassSynth
+        let defs = vec![(
+            TrackId(0),
+            TrackDef {
+                name: "lead".to_string(),
+                instrument: InstrumentRef::Plugin("nonexistent".to_string()),
+                sections: vec![],
+            },
+        )];
+
+        let registry = PluginRegistry::default();
+        let router = InstrumentRouter::from_track_defs_with_kits(&defs, 44100, 42, &registry);
+
+        let note = Event::note(Beat::ZERO, Beat::from_beats(1), TrackId(0), 60, 0.8);
+        let out = router.render(&note, &ctx());
+        assert!(!out.is_empty(), "plugin fallback should produce output");
     }
 }

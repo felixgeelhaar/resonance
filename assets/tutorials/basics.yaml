@@ -1,0 +1,176 @@
+name: "First Sounds"
+lessons:
+  - id: "first-beat"
+    title: "Your First Beat"
+    explanation:
+      - "Welcome to Resonance! Let's make some noise."
+      - ""
+      - "Every song starts with a tempo. Below you see a simple drum pattern."
+      - "X = loud hit, x = soft hit, . = silence"
+      - ""
+      - "Press Ctrl+Enter to hear it play!"
+      - "Press Space (in Perform mode) to stop."
+    code: |
+      tempo 120
+
+      track drums {
+        kit: default
+        section main [1 bars] {
+          kick: [X . . . X . . . X . . . X . . .]
+        }
+      }
+    hints:
+      - "Try changing the tempo number (e.g., 140 for faster)"
+      - "Replace some dots with X to add more kicks"
+    next: "add-hats"
+
+  - id: "add-hats"
+    title: "Adding Hi-Hats"
+    explanation:
+      - "Nice! Now let's add hi-hats on top of the kick."
+      - ""
+      - "Each line in a track is a different instrument."
+      - "kick, snare, hat, clap — these are the drum voices."
+      - ""
+      - "Notice the hats use lowercase 'x' for softer hits."
+    code: |
+      tempo 120
+
+      track drums {
+        kit: default
+        section main [1 bars] {
+          kick:  [X . . . X . . . X . . . X . . .]
+          hat:   [. x . x . x . x . x . x . x . x]
+        }
+      }
+    hints:
+      - "Try adding a snare: snare: [. . . . X . . . . . . . X . . .]"
+      - "The snare on beats 2 and 4 gives a backbeat feel"
+    next: "add-bass"
+
+  - id: "add-bass"
+    title: "Adding a Bass Line"
+    explanation:
+      - "Drums alone are great, but let's add some bass!"
+      - ""
+      - "A bass track uses note names: C2, Eb2, F2, etc."
+      - "The number is the octave — lower = deeper."
+      - ""
+      - "Each track has a type: kit (drums), bass, poly (chords), pluck."
+    code: |
+      tempo 120
+
+      track drums {
+        kit: default
+        section main [1 bars] {
+          kick:  [X . . . X . . . X . . . X . . .]
+          hat:   [. x . x . x . x . x . x . x . x]
+          snare: [. . . . X . . . . . . . X . . .]
+        }
+      }
+
+      track bass {
+        bass
+        section main [1 bars] {
+          note: [C2 . . C2 . . Eb2 . F2 . . F2 . . C2 .]
+        }
+      }
+    hints:
+      - "Try different notes: C, D, Eb, F, G, Ab, Bb"
+      - "Lower octave (C1) sounds deeper, higher (C3) sounds brighter"
+    next: "macros"
+
+  - id: "macros"
+    title: "Macros — Live Control"
+    explanation:
+      - "Macros let you control your sound in real time."
+      - ""
+      - "'macro feel = 0.4' creates a knob from 0.0 to 1.0"
+      - "'map feel -> cutoff ...' connects the knob to a parameter"
+      - ""
+      - "In Perform mode (Ctrl+P), use F1-F8 to adjust macros."
+      - "This is how you shape the sound during a live performance!"
+    code: |
+      tempo 124
+
+      macro feel = 0.4
+      macro space = 0.3
+
+      map feel -> cutoff (200.0..6000.0) exp
+      map space -> reverb_mix (0.0..0.5) linear
+
+      track drums {
+        kit: default
+        section main [2 bars] {
+          kick:  [X . . . X . . . X . . . X . . .]
+          hat:   [. x . x . x . x . x . x . x . x]
+          snare: [. . . . X . . . . . . . X . . .]
+        }
+      }
+
+      track bass {
+        bass
+        section main [2 bars] {
+          note: [C2 . . C2 . . Eb2 . F2 . . F2 . . C2 .]
+        }
+      }
+    hints:
+      - "Switch to Perform mode with Ctrl+P, then use F1/F2 to adjust"
+      - "'exp' curve makes the macro respond more naturally to ear"
+    next: "sections"
+
+  - id: "sections"
+    title: "Sections — Song Structure"
+    explanation:
+      - "Songs have sections: intro, verse, chorus, drop..."
+      - ""
+      - "Each section has a length in bars: [2 bars], [4 bars], etc."
+      - "In Perform mode, press 1-9 to jump between sections."
+      - ""
+      - "Sections transition on bar boundaries (quantized) so"
+      - "the rhythm never breaks. Try jumping between them!"
+    code: |
+      tempo 124
+
+      macro feel = 0.4
+      macro space = 0.3
+
+      map feel -> cutoff (200.0..6000.0) exp
+      map space -> reverb_mix (0.0..0.5) linear
+      map space -> delay_mix (0.0..0.3) linear
+
+      track drums {
+        kit: default
+        section intro [2 bars] {
+          kick:  [X . . . X . . . X . . . X . . .]
+          hat:   [. . x . . . x . . . x . . . x .]
+        }
+        section main [4 bars] {
+          kick:  [X . . . X . . . X . . . X . . .]
+          snare: [. . . . X . . . . . . . X . . .]
+          hat:   [. x . x . x . x . x . x . x . x]
+          clap:  [. . . . X . . . . . . . X . . .]
+        }
+      }
+
+      track bass {
+        bass
+        section intro [2 bars] {
+          note: [C2 . . . . . . . C2 . . . . . Eb2 .]
+        }
+        section main [4 bars] {
+          note: [C2 . . C2 . . Eb2 . F2 . . F2 . . C2 .]
+        }
+      }
+
+      track pad {
+        poly
+        section main [4 bars] {
+          note: [C4 . . . . . . . Eb4 . . . . . . .]
+        }
+      }
+    hints:
+      - "Press 1 for intro, 2 for main in Perform mode"
+      - "Try adding a 'section drop [4 bars]' with a different pattern"
+      - "You've completed the basics! Try :preset techno for a different vibe"
+    next: null
