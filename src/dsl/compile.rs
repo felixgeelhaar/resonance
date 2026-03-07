@@ -138,10 +138,34 @@ fn compile_pattern(
             }
         } else {
             match step {
-                Step::Hit => 0.85,
+                Step::Hit | Step::Ratchet(_, _) => 0.85,
                 Step::Accent(v) => *v as f32,
                 Step::Note(_) => 0.8,
                 Step::Rest => continue,
+                Step::Random(prob) => {
+                    // Use seeded RNG to decide if this step fires
+                    let step_seed = seed.wrapping_add(i as u64);
+                    let mut rng = ChaCha8Rng::seed_from_u64(step_seed);
+                    if rng.gen::<f64>() < *prob {
+                        0.85
+                    } else {
+                        continue;
+                    }
+                }
+                Step::Alternate(options) => {
+                    if options.is_empty() {
+                        continue;
+                    }
+                    // Pick based on step index (pragmatic single-cycle approach)
+                    let picked = &options[i % options.len()];
+                    match picked {
+                        Step::Hit => 0.85,
+                        Step::Accent(v) => *v as f32,
+                        Step::Rest => continue,
+                        _ => 0.8,
+                    }
+                }
+                Step::Subdivided(_) => 0.85, // handled below
             }
         };
 
@@ -151,20 +175,16 @@ fn compile_pattern(
 
         match step {
             Step::Hit => {
-                if is_drum {
-                    events.push(Event::sample(
-                        time,
-                        duration,
-                        track_id,
-                        &pattern.target,
-                        velocity,
-                    ));
-                } else {
-                    // For non-drum instruments, Hit defaults to the pattern target as note
-                    if let Some(midi) = parse_note_name(&pattern.target) {
-                        events.push(Event::note(time, duration, track_id, midi, velocity));
-                    }
-                }
+                emit_step_event(
+                    &mut events,
+                    &Step::Hit,
+                    time,
+                    duration,
+                    track_id,
+                    is_drum,
+                    &pattern.target,
+                    velocity,
+                )?;
             }
             Step::Accent(v) => {
                 let vel = if velocities.is_some() {
@@ -172,23 +192,96 @@ fn compile_pattern(
                 } else {
                     *v as f32
                 };
-                if is_drum {
-                    events.push(Event::sample(
-                        time,
-                        duration,
-                        track_id,
-                        &pattern.target,
-                        vel,
-                    ));
-                } else if let Some(midi) = parse_note_name(&pattern.target) {
-                    events.push(Event::note(time, duration, track_id, midi, vel));
-                }
+                emit_step_event(
+                    &mut events,
+                    step,
+                    time,
+                    duration,
+                    track_id,
+                    is_drum,
+                    &pattern.target,
+                    vel,
+                )?;
             }
             Step::Note(name) => {
                 let midi = parse_note_name(name).ok_or_else(|| {
                     CompileError::compile(format!("invalid note name: '{name}'"), 0, 0)
                 })?;
                 events.push(Event::note(time, duration, track_id, midi, velocity));
+            }
+            Step::Random(_) => {
+                // If we reach here, the RNG decided this step fires (velocity set above)
+                emit_step_event(
+                    &mut events,
+                    &Step::Hit,
+                    time,
+                    duration,
+                    track_id,
+                    is_drum,
+                    &pattern.target,
+                    velocity,
+                )?;
+            }
+            Step::Alternate(options) => {
+                if !options.is_empty() {
+                    let picked = &options[i % options.len()];
+                    emit_step_event(
+                        &mut events,
+                        picked,
+                        time,
+                        duration,
+                        track_id,
+                        is_drum,
+                        &pattern.target,
+                        velocity,
+                    )?;
+                }
+            }
+            Step::Subdivided(inner) => {
+                if !inner.is_empty() {
+                    let sub_count = inner.len();
+                    let sub_dur_beats = step_duration_beats / sub_count as f64;
+                    let sub_duration = Beat::from_beats_f64(sub_dur_beats);
+                    for (si, sub_step) in inner.iter().enumerate() {
+                        let sub_time = time + Beat::from_beats_f64(si as f64 * sub_dur_beats);
+                        let sub_vel = match sub_step {
+                            Step::Hit => 0.85,
+                            Step::Accent(v) => *v as f32,
+                            Step::Rest => continue,
+                            _ => 0.8,
+                        };
+                        emit_step_event(
+                            &mut events,
+                            sub_step,
+                            sub_time,
+                            sub_duration,
+                            track_id,
+                            is_drum,
+                            &pattern.target,
+                            sub_vel,
+                        )?;
+                    }
+                }
+            }
+            Step::Ratchet(inner, count) => {
+                let count = *count as usize;
+                if count > 0 {
+                    let sub_dur_beats = step_duration_beats / count as f64;
+                    let sub_duration = Beat::from_beats_f64(sub_dur_beats);
+                    for ri in 0..count {
+                        let sub_time = time + Beat::from_beats_f64(ri as f64 * sub_dur_beats);
+                        emit_step_event(
+                            &mut events,
+                            inner,
+                            sub_time,
+                            sub_duration,
+                            track_id,
+                            is_drum,
+                            &pattern.target,
+                            velocity,
+                        )?;
+                    }
+                }
             }
             Step::Rest => {}
         }
@@ -200,6 +293,46 @@ fn compile_pattern(
     }
 
     Ok(events)
+}
+
+/// Emit an event for a single step (Hit, Accent, Note). Used by subdivision/ratchet.
+#[allow(clippy::too_many_arguments)]
+fn emit_step_event(
+    events: &mut Vec<Event>,
+    step: &Step,
+    time: Beat,
+    duration: Beat,
+    track_id: TrackId,
+    is_drum: bool,
+    target: &str,
+    velocity: f32,
+) -> Result<(), CompileError> {
+    match step {
+        Step::Hit | Step::Random(_) => {
+            if is_drum {
+                events.push(Event::sample(time, duration, track_id, target, velocity));
+            } else if let Some(midi) = parse_note_name(target) {
+                events.push(Event::note(time, duration, track_id, midi, velocity));
+            }
+        }
+        Step::Accent(_) => {
+            if is_drum {
+                events.push(Event::sample(time, duration, track_id, target, velocity));
+            } else if let Some(midi) = parse_note_name(target) {
+                events.push(Event::note(time, duration, track_id, midi, velocity));
+            }
+        }
+        Step::Note(name) => {
+            let midi = parse_note_name(name).ok_or_else(|| {
+                CompileError::compile(format!("invalid note name: '{name}'"), 0, 0)
+            })?;
+            events.push(Event::note(time, duration, track_id, midi, velocity));
+        }
+        Step::Rest => {}
+        // Nested subdivisions/ratchets/alternation not handled recursively to keep it simple
+        _ => {}
+    }
+    Ok(())
 }
 
 /// Deterministic seed from pattern target and steps for reproducible randomness.
@@ -217,6 +350,10 @@ fn compute_pattern_seed(target: &str, steps: &[Step]) -> u64 {
             Step::Rest => 0,
             Step::Accent(_) => 2,
             Step::Note(_) => 3,
+            Step::Random(_) => 4,
+            Step::Alternate(_) => 5,
+            Step::Subdivided(_) => 6,
+            Step::Ratchet(_, _) => 7,
         };
         hash ^= step_val;
         hash = hash.wrapping_mul(0x0100_0000_01b3);
@@ -874,5 +1011,180 @@ track bass {
         let program = Compiler::parse(src).unwrap();
         let song = compile_program(&program).unwrap();
         assert_eq!(song.events.len(), 2);
+    }
+
+    // --- Extended mini-notation compiler tests ---
+
+    #[test]
+    fn compile_random_deterministic() {
+        let src = r#"drums = kit("default") |> kick.pattern("????????")"#;
+        let program = Compiler::parse(src).unwrap();
+        let song1 = compile_program(&program).unwrap();
+        let song2 = compile_program(&program).unwrap();
+        // Same seed → same events
+        assert_eq!(song1.events.len(), song2.events.len());
+        // With 50% probability and 8 steps, expect roughly half to fire
+        assert!(!song1.events.is_empty());
+        assert!(song1.events.len() < 8);
+    }
+
+    #[test]
+    fn compile_subdivided_timing() {
+        let src = r#"drums = kit("default") |> kick.pattern("{X.X}")"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // {X.X} = 1 subdivided step with 3 inner steps: Hit, Rest, Hit = 2 events
+        assert_eq!(song.events.len(), 2);
+        // Both events should be within the first step's time range
+        assert!(song.events[0].time < song.events[1].time);
+    }
+
+    #[test]
+    fn compile_ratchet_timing() {
+        let src = r#"drums = kit("default") |> kick.pattern("X^3...")"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // X^3 = 3 events in first step, ... = 3 rests = 3 events total
+        assert_eq!(song.events.len(), 3);
+        // All 3 events should be within the first step's time window
+        // 4 steps over 2 bars = 2 beats per step, so all 3 in first 2 beats
+        let two_beats = Beat::from_beats(2);
+        assert!(song.events.iter().all(|e| e.time < two_beats));
+    }
+
+    #[test]
+    fn compile_euclidean_produces_events() {
+        let src = r#"drums = kit("default") |> kick.pattern("E(3,8)")"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.events.len(), 3);
+    }
+
+    // --- Transform + new variant interaction tests ---
+
+    #[test]
+    fn compile_degrade_with_random_steps() {
+        // degrade replaces steps with Rest; Random steps should be degradable
+        let src = r#"drums = kit("default") |> kick.pattern("????????").degrade(0.5)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // After degrade(0.5) on 8 Random(0.5) steps, some get replaced with Rest.
+        // The remaining Random steps then go through RNG. Result should be fewer events.
+        // Just verify it compiles and produces a deterministic result.
+        let song2 = compile_program(&program).unwrap();
+        assert_eq!(song.events.len(), song2.events.len());
+    }
+
+    #[test]
+    fn compile_rev_with_subdivided() {
+        // rev should reverse the step order, moving Subdivided to end
+        let src = r#"drums = kit("default") |> kick.pattern("{X.X}...").rev()"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: {X.X}... → rev: ...{X.X}
+        // Subdivided step now at position 3 of 4. Should produce 2 events near the end.
+        assert_eq!(song.events.len(), 2);
+        // Both events should be in the last quarter of the section
+        let three_beats = Beat::from_beats(3);
+        assert!(
+            song.events.iter().all(|e| e.time >= three_beats),
+            "reversed subdivision should place events near end"
+        );
+    }
+
+    #[test]
+    fn compile_fast_with_ratchet() {
+        // fast(2) should double the pattern including ratchet steps
+        let src = r#"drums = kit("default") |> kick.pattern("X^3...").fast(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: X^3... = 3 events. fast(2) → X^3...X^3... = 6 events
+        assert_eq!(song.events.len(), 6);
+    }
+
+    #[test]
+    fn compile_chop_with_alternate() {
+        // chop(2) should duplicate each step; Alternate steps get duplicated too
+        let src = r#"drums = kit("default") |> kick.pattern("<X x>..").chop(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: <X x>.. (3 steps). chop(2) → <X x><X x>.... (6 steps)
+        // Step 0: Alternate picks options[0%2]=X → hit
+        // Step 1: Alternate picks options[1%2]=x → hit
+        // Steps 2-5: Rest
+        assert_eq!(song.events.len(), 2);
+    }
+
+    #[test]
+    fn compile_gain_with_ratchet() {
+        // gain transform should scale velocity of ratchet sub-events
+        let src = r#"drums = kit("default") |> kick.pattern("X^3...").gain(0.5)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.events.len(), 3);
+        // Default ratchet velocity is 0.85, gain(0.5) → 0.425
+        for event in &song.events {
+            assert!(
+                (event.velocity - 0.425).abs() < 0.01,
+                "ratchet event velocity {} should be 0.425 after gain(0.5)",
+                event.velocity
+            );
+        }
+    }
+
+    #[test]
+    fn compile_rotate_with_random() {
+        // rotate should shift Random steps just like any other step
+        let src = r#"drums = kit("default") |> kick.pattern("?...").rotate(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // ?... rotate(2) → ..?. — random step is now at position 2
+        // Default section is 2 bars (8 beats), 4 steps = 2 beats/step. Position 2 = beat 4.
+        if !song.events.is_empty() {
+            let expected = Beat::from_beats(4);
+            assert_eq!(song.events[0].time, expected);
+        }
+    }
+
+    #[test]
+    fn compile_subdivided_with_velocity_array() {
+        // When velocity array is present, it gates the subdivided step
+        // Inner sub-steps use their own velocities
+        let pattern = PatternDef {
+            target: "kick".to_string(),
+            steps: vec![
+                Step::Subdivided(vec![Step::Hit, Step::Rest, Step::Hit]),
+                Step::Hit,
+            ],
+            velocities: Some(vec![0.9, 0.7]),
+            transforms: vec![],
+        };
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        // Step 0: Subdivided with vel 0.9 (> 0 → active), produces 2 sub-events
+        // Step 1: Hit with vel 0.7
+        assert_eq!(events.len(), 3);
+        // Sub-events should have inner velocities (0.85 for Hit), not 0.9
+        assert!((events[0].velocity - 0.85).abs() < 0.01);
+        assert!((events[1].velocity - 0.85).abs() < 0.01);
+        // Regular hit should use the array velocity
+        assert!((events[2].velocity - 0.7).abs() < 0.01);
+    }
+
+    #[test]
+    fn compile_subdivided_zero_velocity_skips() {
+        // When velocity array has 0.0 for a Subdivided step, skip it entirely
+        let pattern = PatternDef {
+            target: "kick".to_string(),
+            steps: vec![
+                Step::Subdivided(vec![Step::Hit, Step::Hit, Step::Hit]),
+                Step::Hit,
+            ],
+            velocities: Some(vec![0.0, 0.8]),
+            transforms: vec![],
+        };
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        // Step 0: Subdivided with vel 0.0 → skipped
+        // Step 1: Hit with vel 0.8
+        assert_eq!(events.len(), 1);
     }
 }

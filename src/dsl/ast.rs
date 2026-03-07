@@ -94,6 +94,14 @@ pub enum Step {
     Rest,
     Accent(f64),
     Note(String),
+    /// Random hit with probability (0.0–1.0). `?` = 0.5, `?0.7` = 0.7.
+    Random(f64),
+    /// Alternate per cycle: `<X x .>` picks one per cycle.
+    Alternate(Vec<Step>),
+    /// Subdivide: `{X . X}` fits 3 steps into 1 slot.
+    Subdivided(Vec<Step>),
+    /// Ratchet: `X^3` plays 3 rapid hits in 1 step.
+    Ratchet(Box<Step>, u32),
 }
 
 /// A macro definition.

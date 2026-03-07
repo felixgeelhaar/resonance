@@ -985,6 +985,11 @@ fn interval_to_steps(interval: f64) -> Vec<Step> {
 /// - `X` = Hit, `x` = Accent(0.5), `.` = Rest
 /// - `X!N` — element repeat: repeat that step N times
 /// - `[...]*N` — group repeat: repeat inner content N times
+/// - `E(hits,steps)` or `E(hits,steps,rotation)` — Euclidean rhythm
+/// - `?` or `?0.7` — random hit with probability
+/// - `<X x .>` — alternate per cycle
+/// - `{X . x}` — subdivide (fit multiple steps into one slot)
+/// - `X^3` — ratchet (rapid repeated hits in one step)
 fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
     let bytes = s.as_bytes();
     let mut steps = Vec::new();
@@ -1025,6 +1030,107 @@ fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
                     steps.extend_from_slice(&inner_steps);
                 }
             }
+            b'E' if i + 1 < bytes.len() && bytes[i + 1] == b'(' => {
+                // Euclidean rhythm: E(hits,steps) or E(hits,steps,rotation)
+                i += 2; // skip 'E('
+                let hits = parse_int_at(bytes, &mut i);
+                if i < bytes.len() && bytes[i] == b',' {
+                    i += 1;
+                }
+                let total = parse_int_at(bytes, &mut i);
+                let rotation = if i < bytes.len() && bytes[i] == b',' {
+                    i += 1;
+                    parse_int_at(bytes, &mut i)
+                } else {
+                    0
+                };
+                if i < bytes.len() && bytes[i] == b')' {
+                    i += 1;
+                }
+                let euclidean = euclidean_rhythm(hits, total, rotation);
+                steps.extend(euclidean);
+            }
+            b'?' => {
+                // Random hit: ? = 0.5, ?0.7 = 0.7
+                i += 1;
+                let prob = parse_probability(bytes, &mut i);
+                let step = Step::Random(prob);
+                // Check for ^N ratchet suffix
+                if i < bytes.len() && bytes[i] == b'^' {
+                    i += 1;
+                    let count = parse_int_at(bytes, &mut i).max(1);
+                    steps.push(Step::Ratchet(Box::new(step), count as u32));
+                } else {
+                    // Check for !N element repeat
+                    let repeat = parse_repeat_suffix(bytes, &mut i, b'!');
+                    for _ in 0..repeat {
+                        steps.push(step.clone());
+                    }
+                }
+            }
+            b'<' => {
+                // Alternation: <X x .>
+                let start = i + 1;
+                let mut j = start;
+                while j < bytes.len() && bytes[j] != b'>' {
+                    j += 1;
+                }
+                if j >= bytes.len() {
+                    return Err(CompileError::parse(
+                        "unmatched '<' in pattern".to_string(),
+                        0,
+                        i,
+                    ));
+                }
+                let inner = &s[start..j];
+                // Parse each space-separated token as a step
+                let alt_steps: Vec<Step> = inner
+                    .split_whitespace()
+                    .map(|tok| match tok {
+                        "X" => Step::Hit,
+                        "x" => Step::Accent(0.5),
+                        "." => Step::Rest,
+                        _ => Step::Rest,
+                    })
+                    .collect();
+                i = j + 1; // skip past '>'
+                if alt_steps.is_empty() {
+                    steps.push(Step::Rest);
+                } else {
+                    steps.push(Step::Alternate(alt_steps));
+                }
+            }
+            b'{' => {
+                // Subdivision: {X . x}
+                let start = i + 1;
+                let mut j = start;
+                let mut depth = 1u32;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'{' => depth += 1,
+                        b'}' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth > 0 {
+                        j += 1;
+                    }
+                }
+                if depth != 0 {
+                    return Err(CompileError::parse(
+                        "unmatched '{' in pattern".to_string(),
+                        0,
+                        i,
+                    ));
+                }
+                let inner = &s[start..j];
+                let inner_steps = parse_mini_notation(inner)?;
+                i = j + 1; // skip past '}'
+                if inner_steps.is_empty() {
+                    steps.push(Step::Rest);
+                } else {
+                    steps.push(Step::Subdivided(inner_steps));
+                }
+            }
             b'X' | b'x' | b'.' => {
                 let step = match bytes[i] {
                     b'X' => Step::Hit,
@@ -1033,10 +1139,17 @@ fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
                 };
                 i += 1;
 
-                // Check for !N suffix
-                let repeat = parse_repeat_suffix(bytes, &mut i, b'!');
-                for _ in 0..repeat {
-                    steps.push(step.clone());
+                // Check for ^N ratchet suffix (before !N)
+                if i < bytes.len() && bytes[i] == b'^' {
+                    i += 1;
+                    let count = parse_int_at(bytes, &mut i).max(1);
+                    steps.push(Step::Ratchet(Box::new(step), count as u32));
+                } else {
+                    // Check for !N suffix
+                    let repeat = parse_repeat_suffix(bytes, &mut i, b'!');
+                    for _ in 0..repeat {
+                        steps.push(step.clone());
+                    }
                 }
             }
             b' ' => {
@@ -1051,6 +1164,82 @@ fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
     }
 
     Ok(steps)
+}
+
+/// Bjorklund's algorithm — distribute `hits` evenly across `total` steps.
+/// Returns a `Vec<Step>` of Hit and Rest, optionally rotated by `rotation`.
+fn euclidean_rhythm(hits: usize, total: usize, rotation: usize) -> Vec<Step> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let hits = hits.min(total);
+
+    // Bjorklund's algorithm: distribute ones as evenly as possible
+    let mut pattern = vec![false; total];
+    if hits == 0 {
+        return pattern.into_iter().map(|_| Step::Rest).collect();
+    }
+    if hits == total {
+        return vec![Step::Hit; total];
+    }
+
+    // Build using the Bresenham-style distribution
+    let mut previous = 0;
+    for (i, slot) in pattern.iter_mut().enumerate() {
+        let current = ((i + 1) * hits) / total;
+        *slot = current != previous;
+        previous = current;
+    }
+
+    // Apply rotation
+    if rotation > 0 {
+        pattern.rotate_left(rotation % total);
+    }
+
+    pattern
+        .into_iter()
+        .map(|hit| if hit { Step::Hit } else { Step::Rest })
+        .collect()
+}
+
+/// Parse a probability value after `?`. Returns 0.5 if no digit follows.
+fn parse_probability(bytes: &[u8], i: &mut usize) -> f64 {
+    if *i < bytes.len() && (bytes[*i] == b'0' || bytes[*i] == b'1') {
+        let start = *i;
+        // Consume digits and optional decimal point
+        while *i < bytes.len() && (bytes[*i].is_ascii_digit() || bytes[*i] == b'.') {
+            *i += 1;
+        }
+        if start < *i {
+            if let Ok(val) = std::str::from_utf8(&bytes[start..*i])
+                .unwrap_or("0.5")
+                .parse::<f64>()
+            {
+                return val.clamp(0.0, 1.0);
+            }
+        }
+    }
+    0.5
+}
+
+/// Parse an integer at current position, advancing `i`.
+fn parse_int_at(bytes: &[u8], i: &mut usize) -> usize {
+    // Skip whitespace
+    while *i < bytes.len() && bytes[*i] == b' ' {
+        *i += 1;
+    }
+    let start = *i;
+    while *i < bytes.len() && bytes[*i].is_ascii_digit() {
+        *i += 1;
+    }
+    if start < *i {
+        std::str::from_utf8(&bytes[start..*i])
+            .unwrap_or("0")
+            .parse()
+            .unwrap_or(0)
+    } else {
+        0
+    }
 }
 
 /// Parse a repeat suffix (`*N` or `!N`) starting at position `i`.
@@ -1530,7 +1719,7 @@ track drums {
         assert_eq!(steps[0], Step::Hit);
         assert_eq!(steps[1], Step::Rest);
         assert_eq!(steps[2], Step::Accent(0.5));
-        assert_eq!(steps[3], Step::Rest); // '?' falls to rest
+        assert_eq!(steps[3], Step::Random(0.5)); // '?' is random with 50% probability
     }
 
     // --- Mapping log curve ---
@@ -1873,5 +2062,114 @@ drums = kit("default") |> kick.pattern("[X.]*2")
         let song = compile_program(&prog).unwrap();
         // [X.]*2 = X.X. = 4 steps, 2 hits → 2 events
         assert_eq!(song.events.len(), 2);
+    }
+
+    // --- Extended mini-notation tests ---
+
+    #[test]
+    fn parse_mini_euclidean_3_8() {
+        let steps = parse_mini_notation("E(3,8)").unwrap();
+        assert_eq!(steps.len(), 8);
+        let hits: usize = steps.iter().filter(|s| **s == Step::Hit).count();
+        assert_eq!(hits, 3);
+    }
+
+    #[test]
+    fn parse_mini_euclidean_5_8() {
+        let steps = parse_mini_notation("E(5,8)").unwrap();
+        assert_eq!(steps.len(), 8);
+        let hits: usize = steps.iter().filter(|s| **s == Step::Hit).count();
+        assert_eq!(hits, 5);
+    }
+
+    #[test]
+    fn parse_mini_euclidean_rotated() {
+        let base = parse_mini_notation("E(3,8)").unwrap();
+        let rotated = parse_mini_notation("E(3,8,1)").unwrap();
+        assert_eq!(rotated.len(), 8);
+        let hits: usize = rotated.iter().filter(|s| **s == Step::Hit).count();
+        assert_eq!(hits, 3);
+        // Rotation should produce a different pattern
+        assert_ne!(base, rotated);
+    }
+
+    #[test]
+    fn parse_mini_euclidean_edge_cases() {
+        // All hits
+        let all = parse_mini_notation("E(4,4)").unwrap();
+        assert_eq!(all.len(), 4);
+        assert!(all.iter().all(|s| *s == Step::Hit));
+
+        // No hits
+        let none = parse_mini_notation("E(0,4)").unwrap();
+        assert_eq!(none.len(), 4);
+        assert!(none.iter().all(|s| *s == Step::Rest));
+    }
+
+    #[test]
+    fn parse_mini_random_default() {
+        let steps = parse_mini_notation("?").unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0], Step::Random(0.5));
+    }
+
+    #[test]
+    fn parse_mini_random_with_probability() {
+        let steps = parse_mini_notation("?0.7").unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0], Step::Random(0.7));
+    }
+
+    #[test]
+    fn parse_mini_alternate() {
+        let steps = parse_mini_notation("<X x .>").unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0],
+            Step::Alternate(vec![Step::Hit, Step::Accent(0.5), Step::Rest])
+        );
+    }
+
+    #[test]
+    fn parse_mini_subdivided() {
+        let steps = parse_mini_notation("{X.x}").unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(
+            steps[0],
+            Step::Subdivided(vec![Step::Hit, Step::Rest, Step::Accent(0.5)])
+        );
+    }
+
+    #[test]
+    fn parse_mini_ratchet() {
+        let steps = parse_mini_notation("X^3").unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0], Step::Ratchet(Box::new(Step::Hit), 3));
+    }
+
+    #[test]
+    fn parse_mini_mixed_extended() {
+        let steps = parse_mini_notation("E(3,8)?X^2").unwrap();
+        // E(3,8) = 8 steps + ? = 1 random + X^2 = 1 ratchet = 10 total
+        assert_eq!(steps.len(), 10);
+        // First 8 are euclidean (3 hits, 5 rests)
+        let eucl_hits: usize = steps[..8].iter().filter(|s| **s == Step::Hit).count();
+        assert_eq!(eucl_hits, 3);
+        // Step 8 is random
+        assert_eq!(steps[8], Step::Random(0.5));
+        // Step 9 is ratchet
+        assert_eq!(steps[9], Step::Ratchet(Box::new(Step::Hit), 2));
+    }
+
+    #[test]
+    fn parse_mini_unmatched_angle_bracket() {
+        let result = parse_mini_notation("<X x");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_mini_unmatched_curly_brace() {
+        let result = parse_mini_notation("{X.x");
+        assert!(result.is_err());
     }
 }

@@ -139,6 +139,13 @@ impl DslReference {
         lines.push(l("  X = hit, x = soft hit, . = rest"));
         lines.push(l("  [X.]*3            Group repeat (X. three times)"));
         lines.push(l("  X!3               Element repeat (X three times)"));
+        lines.push(l("  E(3,8)            Euclidean rhythm (3 hits in 8)"));
+        lines.push(l("  E(3,8,2)          Euclidean with rotation"));
+        lines.push(l("  ?                 Random hit (50% chance)"));
+        lines.push(l("  ?0.7              Random hit (70% chance)"));
+        lines.push(l("  <X x .>           Alternate per cycle"));
+        lines.push(l("  {X . x}           Subdivide (triplet feel)"));
+        lines.push(l("  X^3               Ratchet (3 rapid hits)"));
         lines.push(l("  [X.]*3X!2         Mixed: X.X.X.XX (8 steps)"));
         lines.push(l(""));
 

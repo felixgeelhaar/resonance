@@ -1145,4 +1145,149 @@ mod tests {
         let summaries = diff.summaries();
         assert!(summaries.iter().any(|s| s.contains("Transforms")));
     }
+
+    // --- Diff round-trip tests for new Step variants ---
+
+    #[test]
+    fn diff_detects_random_step_change() {
+        let a = base_program();
+        let mut b = base_program();
+        b.tracks[0].sections[0].patterns[0].steps =
+            vec![Step::Random(0.5), Step::Rest, Step::Random(0.7), Step::Rest];
+        let diff = AstDiff::diff(&a, &b);
+        assert!(diff.changes.iter().any(|c| matches!(c,
+            AstChange::PatternChanged { target, new_steps, .. }
+            if target == "kick" && new_steps.contains(&Step::Random(0.5))
+        )));
+    }
+
+    #[test]
+    fn diff_apply_random_steps_round_trip() {
+        let a = base_program();
+        let mut b = base_program();
+        let new_steps = vec![Step::Random(0.5), Step::Rest, Step::Random(0.7), Step::Rest];
+        b.tracks[0].sections[0].patterns[0].steps = new_steps.clone();
+
+        let diff = AstDiff::diff(&a, &b);
+        let result = diff.apply(&a).unwrap();
+        assert_eq!(result.tracks[0].sections[0].patterns[0].steps, new_steps);
+    }
+
+    #[test]
+    fn diff_detects_alternate_step_change() {
+        let a = base_program();
+        let mut b = base_program();
+        b.tracks[0].sections[0].patterns[0].steps = vec![
+            Step::Alternate(vec![Step::Hit, Step::Accent(0.5), Step::Rest]),
+            Step::Rest,
+            Step::Rest,
+            Step::Rest,
+        ];
+        let diff = AstDiff::diff(&a, &b);
+        assert!(!diff.is_empty());
+        assert!(diff
+            .changes
+            .iter()
+            .any(|c| matches!(c, AstChange::PatternChanged { target, .. } if target == "kick")));
+    }
+
+    #[test]
+    fn diff_apply_alternate_round_trip() {
+        let a = base_program();
+        let mut b = base_program();
+        let new_steps = vec![
+            Step::Alternate(vec![Step::Hit, Step::Accent(0.5), Step::Rest]),
+            Step::Rest,
+            Step::Hit,
+            Step::Rest,
+        ];
+        b.tracks[0].sections[0].patterns[0].steps = new_steps.clone();
+
+        let diff = AstDiff::diff(&a, &b);
+        let result = diff.apply(&a).unwrap();
+        assert_eq!(result.tracks[0].sections[0].patterns[0].steps, new_steps);
+    }
+
+    #[test]
+    fn diff_detects_subdivided_step_change() {
+        let a = base_program();
+        let mut b = base_program();
+        b.tracks[0].sections[0].patterns[0].steps = vec![
+            Step::Subdivided(vec![Step::Hit, Step::Rest, Step::Hit]),
+            Step::Rest,
+            Step::Rest,
+            Step::Rest,
+        ];
+        let diff = AstDiff::diff(&a, &b);
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn diff_apply_subdivided_round_trip() {
+        let a = base_program();
+        let mut b = base_program();
+        let new_steps = vec![
+            Step::Subdivided(vec![Step::Hit, Step::Rest, Step::Hit]),
+            Step::Rest,
+            Step::Rest,
+            Step::Rest,
+        ];
+        b.tracks[0].sections[0].patterns[0].steps = new_steps.clone();
+
+        let diff = AstDiff::diff(&a, &b);
+        let result = diff.apply(&a).unwrap();
+        assert_eq!(result.tracks[0].sections[0].patterns[0].steps, new_steps);
+    }
+
+    #[test]
+    fn diff_detects_ratchet_step_change() {
+        let a = base_program();
+        let mut b = base_program();
+        b.tracks[0].sections[0].patterns[0].steps = vec![
+            Step::Ratchet(Box::new(Step::Hit), 3),
+            Step::Rest,
+            Step::Rest,
+            Step::Rest,
+        ];
+        let diff = AstDiff::diff(&a, &b);
+        assert!(!diff.is_empty());
+    }
+
+    #[test]
+    fn diff_apply_ratchet_round_trip() {
+        let a = base_program();
+        let mut b = base_program();
+        let new_steps = vec![
+            Step::Ratchet(Box::new(Step::Hit), 3),
+            Step::Rest,
+            Step::Ratchet(Box::new(Step::Accent(0.7)), 2),
+            Step::Rest,
+        ];
+        b.tracks[0].sections[0].patterns[0].steps = new_steps.clone();
+
+        let diff = AstDiff::diff(&a, &b);
+        let result = diff.apply(&a).unwrap();
+        assert_eq!(result.tracks[0].sections[0].patterns[0].steps, new_steps);
+    }
+
+    #[test]
+    fn diff_mixed_new_variants_round_trip() {
+        let a = base_program();
+        let mut b = base_program();
+        let new_steps = vec![
+            Step::Random(0.7),
+            Step::Alternate(vec![Step::Hit, Step::Rest]),
+            Step::Subdivided(vec![Step::Hit, Step::Hit]),
+            Step::Ratchet(Box::new(Step::Hit), 4),
+        ];
+        b.tracks[0].sections[0].patterns[0].steps = new_steps.clone();
+
+        let diff = AstDiff::diff(&a, &b);
+        let result = diff.apply(&a).unwrap();
+        assert_eq!(result.tracks[0].sections[0].patterns[0].steps, new_steps);
+
+        // Verify diff → apply → diff produces empty diff
+        let diff2 = AstDiff::diff(&result, &b);
+        assert!(diff2.is_empty());
+    }
 }

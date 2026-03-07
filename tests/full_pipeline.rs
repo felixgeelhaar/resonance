@@ -349,6 +349,214 @@ drums = kit("default") |> kick.pattern("[X.]*2")"#;
 // =============================================================================
 
 #[test]
+fn euclidean_rhythm_produces_audio() {
+    // E(3,8) = Euclidean rhythm with 3 hits in 8 steps
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("E(3,8)")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "Euclidean rhythm E(3,8) should produce audible audio"
+    );
+}
+
+// =============================================================================
+// Test 13: Random pattern produces audio (probabilistic hits through pipeline)
+// =============================================================================
+
+#[test]
+fn random_pattern_produces_audio() {
+    // 8 random steps at 50% probability — with deterministic seed, some will fire
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("????????")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "random pattern ? should produce audible audio (some hits fire at 50%)"
+    );
+}
+
+// =============================================================================
+// Test 14: Random pattern is deterministic (same seed → same audio)
+// =============================================================================
+
+#[test]
+fn random_pattern_deterministic() {
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("????????")"#;
+
+    let (mut sched_a, mut rf_a) = build_pipeline(src);
+    let (mut sched_b, mut rf_b) = build_pipeline(src);
+
+    let blocks_a = render_blocks(&mut sched_a, &mut rf_a, 30);
+    let blocks_b = render_blocks(&mut sched_b, &mut rf_b, 30);
+
+    assert_eq!(blocks_a.len(), blocks_b.len());
+    for (i, (a, b)) in blocks_a.iter().zip(blocks_b.iter()).enumerate() {
+        assert_eq!(a, b, "block {i}: random pattern must be deterministic");
+    }
+}
+
+// =============================================================================
+// Test 15: Alternation pattern produces audio
+// =============================================================================
+
+#[test]
+fn alternate_pattern_produces_audio() {
+    // Two alternate steps: step 0 picks X (hit), step 1 picks x (soft hit)
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("<X x .><X x .>")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "alternate pattern <X x .> should produce audible audio"
+    );
+}
+
+// =============================================================================
+// Test 16: Subdivision pattern produces audio
+// =============================================================================
+
+#[test]
+fn subdivided_pattern_produces_audio() {
+    // {X.X} = triplet feel: Hit, Rest, Hit in one step's time
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("{X.X}...")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "subdivided pattern {{X.X}} should produce audible audio"
+    );
+}
+
+// =============================================================================
+// Test 17: Ratchet pattern produces audio
+// =============================================================================
+
+#[test]
+fn ratchet_pattern_produces_audio() {
+    // X^3 = 3 rapid hits in one step
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("X^3...")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "ratchet pattern X^3 should produce audible audio"
+    );
+}
+
+// =============================================================================
+// Test 18: Mixed extended notation produces audio
+// =============================================================================
+
+#[test]
+fn mixed_extended_notation_produces_audio() {
+    // Combine Euclidean, ratchet, and random in one pattern
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("E(3,8)")
+    |> snare.pattern("..X^2...")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "mixed extended notation should produce audible audio"
+    );
+}
+
+// =============================================================================
+// Test 19: Ratchet produces more events than single hit
+// =============================================================================
+
+#[test]
+fn ratchet_denser_than_single_hit() {
+    let src_single = r#"tempo 128
+drums = kit("default") |> kick.pattern("X...")"#;
+    let src_ratchet = r#"tempo 128
+drums = kit("default") |> kick.pattern("X^4...")"#;
+
+    let (mut sched_s, mut rf_s) = build_pipeline(src_single);
+    let (mut sched_r, mut rf_r) = build_pipeline(src_ratchet);
+
+    let blocks_single = render_blocks(&mut sched_s, &mut rf_s, 50);
+    let blocks_ratchet = render_blocks(&mut sched_r, &mut rf_r, 50);
+
+    // Ratchet should have more energy (4 hits vs 1 hit in same time)
+    let energy_single: f64 = blocks_single
+        .iter()
+        .flat_map(|b| b.iter())
+        .map(|&s| (s as f64) * (s as f64))
+        .sum();
+
+    let energy_ratchet: f64 = blocks_ratchet
+        .iter()
+        .flat_map(|b| b.iter())
+        .map(|&s| (s as f64) * (s as f64))
+        .sum();
+
+    assert!(
+        energy_ratchet > energy_single,
+        "ratchet X^4 ({energy_ratchet:.2}) should have more energy than single X ({energy_single:.2})"
+    );
+}
+
+// =============================================================================
+// Test 20: Transforms work with extended notation through pipeline
+// =============================================================================
+
+#[test]
+fn extended_notation_with_transforms() {
+    // Euclidean rhythm with .fast(2) transform
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("E(3,8)").fast(2)"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "extended notation with transforms should produce audio"
+    );
+}
+
+#[test]
 fn mini_notation_matches_expanded_pattern() {
     // [X.]*2 should expand to X.X. — identical to writing "X.X." directly
     let src_mini = r#"tempo 128
