@@ -1,0 +1,402 @@
+{
+  "id": "plan-resonance-1772063025",
+  "spec_id": "resonance",
+  "tasks": [
+    {
+      "id": "task-tui-focus-routing-fix",
+      "title": "TUI Focus Routing Fix",
+      "description": "Fix keybinding system to respect FocusPanel. Pass focus to map_key_with_diff(), guard editor actions by Editor focus, add panel-specific handlers for Tracks/Grid/Macros/IntentConsole. Add tests for focus isolation.",
+      "priority": "high",
+      "estimate": "4h",
+      "depends_on": [
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "tui-focus-routing-fix"
+    },
+    {
+      "id": "task-audio-playback-integration",
+      "title": "Audio Playback Integration",
+      "description": "Implement beat advancement in run() loop based on wall-clock time and BPM. Update current_beat, status.position_bars/beats each frame. Connect compiled events to EventScheduler for playback. Add tests for beat progression and status updates.",
+      "priority": "high",
+      "estimate": "6h",
+      "depends_on": [
+        "task-grid-visualization-\u0026-tui",
+        "task-audio-engine-skeleton"
+      ],
+      "feature_id": "audio-playback-integration"
+    },
+    {
+      "id": "task-grid-visualization-integration",
+      "title": "Grid Visualization Integration",
+      "description": "Replace draw_grid() placeholder with actual grid rendering using project_events() from grid.rs. Store compiled events in App, render TrackGrid cells as styled text with track names, playback cursor. Add tests for grid accuracy.",
+      "priority": "high",
+      "estimate": "4h",
+      "depends_on": [
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "grid-visualization-integration"
+    },
+    {
+      "id": "task-tui-help-system",
+      "title": "TUI Help System \u0026 Onboarding",
+      "description": "Create help.rs with HelpScreen modal overlay (? key). Display all keybindings by mode. Expand status bar with context-sensitive hints. Improve first-run tips. Add tests for help display and keybinding completeness.",
+      "priority": "medium",
+      "estimate": "4h",
+      "depends_on": [
+        "task-tui-focus-routing-fix"
+      ],
+      "feature_id": "tui-help-system-\u0026-onboarding"
+    },
+    {
+      "id": "task-tui-e2e-test-suite",
+      "title": "TUI E2E \u0026 UI Test Suite",
+      "description": "Comprehensive E2E tests: focus isolation, playback state transitions, grid rendering accuracy, help modal lifecycle, keybinding completeness, mode transitions, panel cycling, compile-on-edit. Headless terminal backend for automated testing.",
+      "priority": "high",
+      "estimate": "6h",
+      "depends_on": [
+        "task-tui-focus-routing-fix",
+        "task-audio-playback-integration",
+        "task-grid-visualization-integration",
+        "task-tui-help-system"
+      ],
+      "feature_id": "tui-e2e-\u0026-ui-test-suite"
+    },
+    {
+      "id": "task-quantized-safe-updates",
+      "title": "Quantized Safe Updates",
+      "description": "State changes snap to beat/bar boundaries. Hot reload with safe apply. Crash-resistant updates -- failures don't interrupt playback. Double-buffer swap for partial-state protection.",
+      "priority": "high",
+      "estimate": "6h",
+      "depends_on": [
+        "task-audio-engine-skeleton",
+        "task-event-scheduling-core"
+      ],
+      "feature_id": "quantized-safe-updates"
+    },
+    {
+      "id": "task-first-run-feel-prompt",
+      "title": "First-Run Feel Prompt",
+      "description": "On launch: 'What should it feel like?' then generate editable DSL skeleton. Display full DSL, no hidden state. Skeleton is a starting point, fully editable.",
+      "priority": "medium",
+      "estimate": "4h",
+      "depends_on": [
+        "task-dsl-parser",
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "first-run-feel-prompt"
+    },
+    {
+      "id": "task-structural-intent-(diff-mode)",
+      "title": "Structural Intent (Diff Mode)",
+      "description": "AST-level code diffs, track-safe and mapping-safe updates. Accept/reject required. Pipeline: Intent Input to Mode Detection to Taste Bias to Diff Generator to Preview to Accept/Reject to Apply.",
+      "priority": "medium",
+      "estimate": "10h",
+      "depends_on": [
+        "task-basic-intent-system-(macro-only)",
+        "task-dsl-parser"
+      ],
+      "feature_id": "structural-intent-(diff-mode)"
+    },
+    {
+      "id": "task-section-overrides",
+      "title": "Section Overrides",
+      "description": "Section-aware mapping overrides activating on section entry. Precedence: layer additions \u003e section overrides \u003e base mappings. Explicit in DSL and visible in TUI.",
+      "priority": "medium",
+      "estimate": "4h",
+      "depends_on": [
+        "task-sections-\u0026-quantized-transitions",
+        "task-macros-\u0026-mapping-system"
+      ],
+      "feature_id": "section-overrides"
+    },
+    {
+      "id": "task-osc-support",
+      "title": "OSC Support",
+      "description": "Open Sound Control for networked control. Send/receive OSC messages. Map OSC addresses to macros and intent inputs.",
+      "priority": "low",
+      "estimate": "6h",
+      "depends_on": [
+        "task-macros-\u0026-mapping-system"
+      ],
+      "feature_id": "osc-support"
+    },
+    {
+      "id": "task-audio-engine-skeleton",
+      "title": "Audio Engine Skeleton",
+      "description": "Dedicated audio thread with cpal. Lock-free ring buffer for UI-audio communication. Double-buffer swap for safe state updates. Master limiter safety net. No allocations on audio thread. Pre-buffered event scheduling infrastructure.",
+      "priority": "high",
+      "estimate": "8h",
+      "depends_on": [
+        "task-project-scaffolding-\u0026-repo-setup"
+      ],
+      "feature_id": "audio-engine-skeleton"
+    },
+    {
+      "id": "task-basic-drum-playback",
+      "title": "Basic Drum Playback",
+      "description": "WAV sample loading via hound. Sample-based drum kit triggered by scheduler events. Validates full pipeline end-to-end: hardcoded events to scheduler to audio engine to speakers.",
+      "priority": "high",
+      "estimate": "4h",
+      "depends_on": [
+        "task-audio-engine-skeleton",
+        "task-event-scheduling-core"
+      ],
+      "feature_id": "basic-drum-playback"
+    },
+    {
+      "id": "task-basic-instruments",
+      "title": "Basic Instruments",
+      "description": "Built-in synths: bass (mono), poly (pad), pluck/keys, noise/riser. Each receives events and produces audio samples. Basic FX chain: reverb, delay, drive, sidechain compression, limiter.",
+      "priority": "high",
+      "estimate": "16h",
+      "depends_on": [
+        "task-audio-engine-skeleton",
+        "task-basic-drum-playback"
+      ],
+      "feature_id": "basic-instruments"
+    },
+    {
+      "id": "task-sections-\u0026-quantized-transitions",
+      "title": "Sections \u0026 Quantized Transitions",
+      "description": "Section model (name, length_in_bars, mapping_overrides). Quantized transition manager for bar-boundary changes. Scene jumping. Safe state commit. DSL support for sections.",
+      "priority": "high",
+      "estimate": "8h",
+      "depends_on": [
+        "task-macros-\u0026-mapping-system",
+        "task-pattern-engine"
+      ],
+      "feature_id": "sections-\u0026-quantized-transitions"
+    },
+    {
+      "id": "task-basic-intent-system-(macro-only)",
+      "title": "Basic Intent System (Macro-Only)",
+      "description": "Performance intent: macro deltas, mapping tweaks, layer toggles. Quantized apply on beat boundaries. Intent console in TUI. Pipeline: Intent Input to Mode Detection to Apply.",
+      "priority": "high",
+      "estimate": "6h",
+      "depends_on": [
+        "task-macros-\u0026-mapping-system",
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "basic-intent-system-(macro-only)"
+    },
+    {
+      "id": "task-diff-preview-ui",
+      "title": "Diff Preview UI",
+      "description": "Intent console panel for structural diff preview. Visual AST-level diff. Accept/reject controls. Full scope of changes visible -- no hidden mutations.",
+      "priority": "medium",
+      "estimate": "6h",
+      "depends_on": [
+        "task-structural-intent-(diff-mode)",
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "diff-preview-ui"
+    },
+    {
+      "id": "task-stability-hardening",
+      "title": "Stability Hardening",
+      "description": "Crash-resistance during performance. Graceful error recovery without dropout. Stress testing. Buffer underrun handling. Audio thread watchdog. Error boundaries between layers.",
+      "priority": "low",
+      "estimate": "10h",
+      "depends_on": [
+        "task-quantized-safe-updates",
+        "task-audio-engine-skeleton"
+      ],
+      "feature_id": "stability-hardening"
+    },
+    {
+      "id": "task-visualization-themes",
+      "title": "Visualization Themes",
+      "description": "Themeable TUI: color schemes, layout configs, visual styles. Built-in presets. User-defined themes via config. Hot-switching during performance.",
+      "priority": "low",
+      "estimate": "4h",
+      "depends_on": [
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "visualization-themes"
+    },
+    {
+      "id": "task-pattern-engine",
+      "title": "Pattern Engine",
+      "description": "AST to Track Graph to Event Stream to Audio Scheduler. Pattern repetition, variation, composition. Deterministic: same seed + same code = same events.",
+      "priority": "high",
+      "estimate": "8h",
+      "depends_on": [
+        "task-dsl-parser",
+        "task-event-scheduling-core"
+      ],
+      "feature_id": "pattern-engine"
+    },
+    {
+      "id": "task-grid-visualization-\u0026-tui",
+      "title": "Grid Visualization \u0026 TUI",
+      "description": "ratatui + crossterm TUI. Panels: editor, track list, grid (event stream projection), macro meters, performance controls. Hot reload of DSL blocks.",
+      "priority": "high",
+      "estimate": "12h",
+      "depends_on": [
+        "task-event-scheduling-core"
+      ],
+      "feature_id": "grid-visualization-\u0026-tui"
+    },
+    {
+      "id": "task-macros-\u0026-mapping-system",
+      "title": "Macros \u0026 Mapping System",
+      "description": "Macro engine: explicit declaration (name + value), mapping to target params with range and curve. Curves: linear, log, exp, smoothstep. Curve override support. Macro meters in TUI.",
+      "priority": "high",
+      "estimate": "8h",
+      "depends_on": [
+        "task-event-scheduling-core"
+      ],
+      "feature_id": "macros-\u0026-mapping-system"
+    },
+    {
+      "id": "task-layers",
+      "title": "Layers",
+      "description": "Layer model (name, mapping_additions, enabled). Enable/disable via intent. Stackable with mapping additions. Quantized toggling. Declared in DSL, controllable from TUI and intent console.",
+      "priority": "medium",
+      "estimate": "6h",
+      "depends_on": [
+        "task-sections-\u0026-quantized-transitions",
+        "task-basic-intent-system-(macro-only)"
+      ],
+      "feature_id": "layers"
+    },
+    {
+      "id": "task-midi-controller-support",
+      "title": "MIDI Controller Support",
+      "description": "MIDI input from external controllers. CC to macro mapping. Note to trigger mapping. MIDI learn mode. Cross-platform via midir crate.",
+      "priority": "low",
+      "estimate": "8h",
+      "depends_on": [
+        "task-macros-\u0026-mapping-system"
+      ],
+      "feature_id": "midi-controller-support"
+    },
+    {
+      "id": "task-performance-macros-ux-polish",
+      "title": "Performance Macros UX Polish",
+      "description": "Smooth transitions, visual feedback, ergonomic shortcuts, macro grouping, quick-access controls. Optimized for stage use.",
+      "priority": "low",
+      "estimate": "6h",
+      "depends_on": [
+        "task-macros-\u0026-mapping-system",
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "performance-macros-ux-polish"
+    },
+    {
+      "id": "task-plugin-api",
+      "title": "Plugin API",
+      "description": "Extensible plugin system for instruments, effects, DSL extensions. Stable third-party API. Plugin discovery and loading. Sandboxed execution for audio thread safety.",
+      "priority": "low",
+      "estimate": "16h",
+      "depends_on": [
+        "task-audio-engine-skeleton",
+        "task-dsl-parser",
+        "task-basic-instruments"
+      ],
+      "feature_id": "plugin-api"
+    },
+    {
+      "id": "task-instrument-packs",
+      "title": "Instrument Packs",
+      "description": "Distributable instrument/sample packs. Pack format spec. Built-in pack manager. Curated starter packs.",
+      "priority": "low",
+      "estimate": "8h",
+      "depends_on": [
+        "task-plugin-api"
+      ],
+      "feature_id": "instrument-packs"
+    },
+    {
+      "id": "task-event-scheduling-core",
+      "title": "Event Scheduling Core",
+      "description": "Event data model (time in beats/bars, duration, track_id, note/sample, velocity, params). Deterministic scheduler processing events in time order. Beat/bar timing with configurable BPM. Seedable randomness. Transform pipeline.",
+      "priority": "high",
+      "estimate": "6h",
+      "depends_on": [
+        "task-project-scaffolding-\u0026-repo-setup"
+      ],
+      "feature_id": "event-scheduling-core"
+    },
+    {
+      "id": "task-advanced-mapping-behavior",
+      "title": "Advanced Mapping Behavior",
+      "description": "Stackable layer mappings with resolution order. Per-section and per-layer curve overrides. Section-aware overrides composing with layer additions. Multi-macro targeting through different curves.",
+      "priority": "medium",
+      "estimate": "6h",
+      "depends_on": [
+        "task-layers",
+        "task-section-overrides"
+      ],
+      "feature_id": "advanced-mapping-behavior"
+    },
+    {
+      "id": "task-taste-system",
+      "title": "Taste System",
+      "description": "Opt-in learning at ~/.resonance/taste.yaml. Session + persistent learning. Tracks: preferred ranges, accepted diffs, undo patterns, macro movement. Influences proposal weighting. Inspectable, editable, resettable. Never auto-applies structural changes.",
+      "priority": "medium",
+      "estimate": "8h",
+      "depends_on": [
+        "task-basic-intent-system-(macro-only)"
+      ],
+      "feature_id": "taste-system"
+    },
+    {
+      "id": "task-advanced-visualization",
+      "title": "Advanced Visualization",
+      "description": "Waveform display, spectrum analyzer, expressive grid rendering, macro movement trails, section timeline. Performance-oriented without compromising audio latency.",
+      "priority": "low",
+      "estimate": "10h",
+      "depends_on": [
+        "task-grid-visualization-\u0026-tui"
+      ],
+      "feature_id": "advanced-visualization"
+    },
+    {
+      "id": "task-community-contributions",
+      "title": "Community Contributions",
+      "description": "Contribution guidelines, plugin registry, shared macro presets, community DSL snippets. Sharing infrastructure. Review process.",
+      "priority": "low",
+      "estimate": "6h",
+      "depends_on": [
+        "task-plugin-api"
+      ],
+      "feature_id": "community-contributions"
+    },
+    {
+      "id": "task-project-scaffolding-\u0026-repo-setup",
+      "title": "Project Scaffolding \u0026 Repo Setup",
+      "description": "Initialize Rust project with Cargo.toml, module structure (audio/, event/, dsl/, macro_engine/, section/, intent/, taste/, tui/), .gitignore, CI configuration. Establish foundational crate dependencies: cpal, ratatui, crossterm, serde, ringbuf/crossbeam, hound.",
+      "priority": "high",
+      "estimate": "2h",
+      "depends_on": [],
+      "feature_id": "project-scaffolding-\u0026-repo-setup"
+    },
+    {
+      "id": "task-dsl-parser",
+      "title": "DSL Parser",
+      "description": "Lexer, parser, AST. Two syntax styles (declarative + functional chain) compiling to identical AST. Pipeline: DSL Source to Lexer to Parser to AST. Error reporting with line/column info.",
+      "priority": "high",
+      "estimate": "12h",
+      "depends_on": [
+        "task-project-scaffolding-\u0026-repo-setup"
+      ],
+      "feature_id": "dsl-parser"
+    },
+    {
+      "id": "task-mini-notation",
+      "title": "Mini-Notation in Pattern Strings",
+      "description": "Strudel-inspired mini-notation for functional chain pattern strings. Group repeat [X.]*N expands inner content N times. Element repeat X!N repeats a single step N times. Backward-compatible with existing single-character patterns. 12 parser tests + compiler round-trip test. DSL reference updated.",
+      "priority": "medium",
+      "estimate": "2h",
+      "depends_on": [
+        "task-dsl-parser",
+        "task-pattern-engine"
+      ],
+      "feature_id": "mini-notation"
+    }
+  ],
+  "approval_status": "approved",
+  "created_at": "2026-02-26T00:43:45.811754+01:00",
+  "updated_at": "2026-03-07T12:09:16.459546+01:00"
+}
