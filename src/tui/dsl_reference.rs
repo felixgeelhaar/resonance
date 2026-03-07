@@ -135,6 +135,13 @@ impl DslReference {
         lines.push(l("  Methods: .pattern(\"...\"), .at([1,3]), .every(N)"));
         lines.push(l(""));
 
+        lines.push(h("MINI-NOTATION"));
+        lines.push(l("  X = hit, x = soft hit, . = rest"));
+        lines.push(l("  [X.]*3            Group repeat (X. three times)"));
+        lines.push(l("  X!3               Element repeat (X three times)"));
+        lines.push(l("  [X.]*3X!2         Mixed: X.X.X.XX (8 steps)"));
+        lines.push(l(""));
+
         lines.push(h("PATTERN TRANSFORMS"));
         lines.push(l("  .fast(N)          Repeat pattern N times (speed up)"));
         lines.push(l(

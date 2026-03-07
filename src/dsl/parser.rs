@@ -707,16 +707,7 @@ impl Parser {
     }
 
     fn parse_inline_pattern(&mut self, s: &str) -> Result<Vec<Step>, CompileError> {
-        let steps: Vec<Step> = s
-            .chars()
-            .map(|ch| match ch {
-                'X' => Step::Hit,
-                'x' => Step::Accent(0.5),
-                '.' => Step::Rest,
-                _ => Step::Rest,
-            })
-            .collect();
-        Ok(steps)
+        parse_mini_notation(s)
     }
 
     fn parse_velocity_arg(&mut self) -> Result<Vec<f64>, CompileError> {
@@ -986,6 +977,103 @@ fn interval_to_steps(interval: f64) -> Vec<Step> {
     let num_steps = (4.0 / interval).round() as usize;
     let steps = vec![Step::Hit; num_steps.max(1)];
     steps
+}
+
+/// Parse a mini-notation pattern string into steps.
+///
+/// Supports:
+/// - `X` = Hit, `x` = Accent(0.5), `.` = Rest
+/// - `X!N` — element repeat: repeat that step N times
+/// - `[...]*N` — group repeat: repeat inner content N times
+fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
+    let bytes = s.as_bytes();
+    let mut steps = Vec::new();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'[' => {
+                // Find the matching ']'
+                let start = i + 1;
+                let mut depth = 1u32;
+                let mut j = start;
+                while j < bytes.len() && depth > 0 {
+                    match bytes[j] {
+                        b'[' => depth += 1,
+                        b']' => depth -= 1,
+                        _ => {}
+                    }
+                    if depth > 0 {
+                        j += 1;
+                    }
+                }
+                if depth != 0 {
+                    return Err(CompileError::parse(
+                        "unmatched '[' in pattern".to_string(),
+                        0,
+                        i,
+                    ));
+                }
+                // j points at the matching ']'
+                let inner = &s[start..j];
+                let inner_steps = parse_mini_notation(inner)?;
+                i = j + 1; // skip past ']'
+
+                // Check for *N suffix
+                let repeat = parse_repeat_suffix(bytes, &mut i, b'*');
+                for _ in 0..repeat {
+                    steps.extend_from_slice(&inner_steps);
+                }
+            }
+            b'X' | b'x' | b'.' => {
+                let step = match bytes[i] {
+                    b'X' => Step::Hit,
+                    b'x' => Step::Accent(0.5),
+                    _ => Step::Rest,
+                };
+                i += 1;
+
+                // Check for !N suffix
+                let repeat = parse_repeat_suffix(bytes, &mut i, b'!');
+                for _ in 0..repeat {
+                    steps.push(step.clone());
+                }
+            }
+            b' ' => {
+                i += 1;
+            }
+            _ => {
+                // Unknown characters treated as rest
+                steps.push(Step::Rest);
+                i += 1;
+            }
+        }
+    }
+
+    Ok(steps)
+}
+
+/// Parse a repeat suffix (`*N` or `!N`) starting at position `i`.
+/// Returns the repeat count (1 if no suffix found).
+fn parse_repeat_suffix(bytes: &[u8], i: &mut usize, marker: u8) -> usize {
+    if *i < bytes.len() && bytes[*i] == marker {
+        *i += 1; // skip marker
+        let start = *i;
+        while *i < bytes.len() && bytes[*i].is_ascii_digit() {
+            *i += 1;
+        }
+        if start < *i {
+            let n: usize = std::str::from_utf8(&bytes[start..*i])
+                .unwrap()
+                .parse()
+                .unwrap_or(1);
+            n.max(1)
+        } else {
+            1
+        }
+    } else {
+        1
+    }
 }
 
 #[cfg(test)]
@@ -1665,5 +1753,125 @@ track drums {
         assert!(pat.velocities.is_some());
         assert_eq!(pat.transforms.len(), 1);
         assert_eq!(pat.transforms[0], Transform::Fast(2.0));
+    }
+
+    // --- Mini-notation tests ---
+
+    #[test]
+    fn parse_mini_notation_group_repeat() {
+        let steps = parse_mini_notation("[X.]*3").unwrap();
+        assert_eq!(steps.len(), 6);
+        assert_eq!(steps[0], Step::Hit);
+        assert_eq!(steps[1], Step::Rest);
+        assert_eq!(steps[2], Step::Hit);
+        assert_eq!(steps[3], Step::Rest);
+        assert_eq!(steps[4], Step::Hit);
+        assert_eq!(steps[5], Step::Rest);
+    }
+
+    #[test]
+    fn parse_mini_notation_element_repeat() {
+        let steps = parse_mini_notation("X!3").unwrap();
+        assert_eq!(steps.len(), 3);
+        assert!(steps.iter().all(|s| *s == Step::Hit));
+    }
+
+    #[test]
+    fn parse_mini_notation_accent_group() {
+        let steps = parse_mini_notation("[Xx]*2").unwrap();
+        assert_eq!(steps.len(), 4);
+        assert_eq!(steps[0], Step::Hit);
+        assert_eq!(steps[1], Step::Accent(0.5));
+        assert_eq!(steps[2], Step::Hit);
+        assert_eq!(steps[3], Step::Accent(0.5));
+    }
+
+    #[test]
+    fn parse_mini_notation_rest_group() {
+        let steps = parse_mini_notation("[.]*4").unwrap();
+        assert_eq!(steps.len(), 4);
+        assert!(steps.iter().all(|s| *s == Step::Rest));
+    }
+
+    #[test]
+    fn parse_mini_notation_rest_element_repeat() {
+        let steps = parse_mini_notation(".!3").unwrap();
+        assert_eq!(steps.len(), 3);
+        assert!(steps.iter().all(|s| *s == Step::Rest));
+    }
+
+    #[test]
+    fn parse_mini_notation_identity_repeat() {
+        let steps = parse_mini_notation("X!1").unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0], Step::Hit);
+    }
+
+    #[test]
+    fn parse_mini_notation_mixed() {
+        let steps = parse_mini_notation("[X.]*2.x").unwrap();
+        assert_eq!(steps.len(), 6);
+        assert_eq!(steps[0], Step::Hit);
+        assert_eq!(steps[1], Step::Rest);
+        assert_eq!(steps[2], Step::Hit);
+        assert_eq!(steps[3], Step::Rest);
+        assert_eq!(steps[4], Step::Rest);
+        assert_eq!(steps[5], Step::Accent(0.5));
+    }
+
+    #[test]
+    fn parse_mini_notation_backward_compat() {
+        let steps = parse_mini_notation("X.x.").unwrap();
+        assert_eq!(steps.len(), 4);
+        assert_eq!(steps[0], Step::Hit);
+        assert_eq!(steps[1], Step::Rest);
+        assert_eq!(steps[2], Step::Accent(0.5));
+        assert_eq!(steps[3], Step::Rest);
+    }
+
+    #[test]
+    fn parse_mini_notation_nested_group_with_trailing() {
+        let steps = parse_mini_notation("[X.x]*2!").unwrap();
+        // [X.x]*2 = X.xX.x (6 steps), then '!' is unknown char → rest
+        assert_eq!(steps.len(), 7);
+        assert_eq!(steps[0], Step::Hit);
+        assert_eq!(steps[1], Step::Rest);
+        assert_eq!(steps[2], Step::Accent(0.5));
+        assert_eq!(steps[3], Step::Hit);
+        assert_eq!(steps[4], Step::Rest);
+        assert_eq!(steps[5], Step::Accent(0.5));
+        assert_eq!(steps[6], Step::Rest); // '!' with no digit → treated as unknown
+    }
+
+    #[test]
+    fn parse_mini_notation_unmatched_bracket() {
+        let result = parse_mini_notation("[X.");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_mini_notation_full_round_trip() {
+        let src = r#"drums = kit("default") |> kick.pattern("[X.]*3X!2")"#;
+        let prog = parse(src).unwrap();
+        let steps = &prog.tracks[0].sections[0].patterns[0].steps;
+        // [X.]*3 = X.X.X. (6) + X!2 = XX (2) = 8 total
+        assert_eq!(steps.len(), 8);
+        assert_eq!(steps[0], Step::Hit);
+        assert_eq!(steps[1], Step::Rest);
+        assert_eq!(steps[6], Step::Hit);
+        assert_eq!(steps[7], Step::Hit);
+    }
+
+    #[test]
+    fn parse_mini_notation_compile_round_trip() {
+        use crate::dsl::compile::compile_program;
+        let src = r#"
+tempo 120
+drums = kit("default") |> kick.pattern("[X.]*2")
+"#;
+        let prog = parse(src).unwrap();
+        let song = compile_program(&prog).unwrap();
+        // [X.]*2 = X.X. = 4 steps, 2 hits → 2 events
+        assert_eq!(song.events.len(), 2);
     }
 }
