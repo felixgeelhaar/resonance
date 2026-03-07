@@ -323,6 +323,7 @@ impl Parser {
             target,
             steps,
             velocities,
+            transforms: vec![],
         })
     }
 
@@ -515,7 +516,7 @@ impl Parser {
         let velocities = if self.check(TokenKind::Dot) {
             let saved = self.pos;
             self.advance();
-            if self.check_ident("vel") {
+            if self.check_ident("vel") || self.check(TokenKind::Vel) {
                 self.advance();
                 self.expect(TokenKind::LParen)?;
                 let vels = self.parse_velocity_arg()?;
@@ -529,11 +530,180 @@ impl Parser {
             None
         };
 
+        // Parse optional transform chain: .fast(2).rev()
+        let transforms = self.parse_transform_chain()?;
+
         Ok(PatternDef {
             target,
             steps,
             velocities,
+            transforms,
         })
+    }
+
+    /// Parse a chain of transforms: `.fast(2).rev().degrade(0.3)`
+    fn parse_transform_chain(&mut self) -> Result<Vec<Transform>, CompileError> {
+        let mut transforms = Vec::new();
+
+        while self.check(TokenKind::Dot) {
+            let saved = self.pos;
+            self.advance(); // consume '.'
+
+            let t = self.peek();
+            let method = match &t.kind {
+                TokenKind::Ident(s) => s.clone(),
+                _ => {
+                    self.pos = saved;
+                    break;
+                }
+            };
+
+            match method.as_str() {
+                "fast" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Fast(n));
+                }
+                "slow" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Slow(n));
+                }
+                "rev" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Rev);
+                }
+                "rotate" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Rotate(n as i32));
+                }
+                "degrade" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Degrade(n));
+                }
+                "every" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()? as u32;
+                    self.expect(TokenKind::Comma)?;
+                    let inner = self.parse_inner_transform()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Every(n, Box::new(inner)));
+                }
+                "sometimes" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let prob = self.expect_number()?;
+                    self.expect(TokenKind::Comma)?;
+                    let inner = self.parse_inner_transform()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Sometimes(prob, Box::new(inner)));
+                }
+                "chop" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()? as u32;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Chop(n));
+                }
+                "stutter" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()? as u32;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Stutter(n));
+                }
+                "add" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()? as i32;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Add(n));
+                }
+                "gain" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Gain(n));
+                }
+                "legato" => {
+                    self.advance();
+                    self.expect(TokenKind::LParen)?;
+                    let n = self.expect_number()?;
+                    self.expect(TokenKind::RParen)?;
+                    transforms.push(Transform::Legato(n));
+                }
+                _ => {
+                    // Not a known transform — backtrack
+                    self.pos = saved;
+                    break;
+                }
+            }
+        }
+
+        Ok(transforms)
+    }
+
+    /// Parse a transform name inside `every(N, ...)` or `sometimes(prob, ...)`.
+    fn parse_inner_transform(&mut self) -> Result<Transform, CompileError> {
+        let name = self.expect_ident()?;
+        match name.as_str() {
+            "rev" => Ok(Transform::Rev),
+            "fast" => {
+                self.expect(TokenKind::LParen)?;
+                let n = self.expect_number()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(Transform::Fast(n))
+            }
+            "slow" => {
+                self.expect(TokenKind::LParen)?;
+                let n = self.expect_number()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(Transform::Slow(n))
+            }
+            "rotate" => {
+                self.expect(TokenKind::LParen)?;
+                let n = self.expect_number()? as i32;
+                self.expect(TokenKind::RParen)?;
+                Ok(Transform::Rotate(n))
+            }
+            "degrade" => {
+                self.expect(TokenKind::LParen)?;
+                let n = self.expect_number()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(Transform::Degrade(n))
+            }
+            "chop" => {
+                self.expect(TokenKind::LParen)?;
+                let n = self.expect_number()? as u32;
+                self.expect(TokenKind::RParen)?;
+                Ok(Transform::Chop(n))
+            }
+            "stutter" => {
+                self.expect(TokenKind::LParen)?;
+                let n = self.expect_number()? as u32;
+                self.expect(TokenKind::RParen)?;
+                Ok(Transform::Stutter(n))
+            }
+            _ => Err(CompileError::parse(
+                format!("unknown inner transform: {name}"),
+                self.peek().line,
+                self.peek().col,
+            )),
+        }
     }
 
     fn parse_inline_pattern(&mut self, s: &str) -> Result<Vec<Step>, CompileError> {
@@ -1347,5 +1517,153 @@ track drums {
 "#;
         let prog = parse(src).unwrap();
         assert_eq!(prog.layers[0].mappings[0].curve, CurveKind::Log);
+    }
+
+    // --- Transform parsing tests ---
+
+    #[test]
+    fn parse_transform_fast() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").fast(2)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms.len(), 1);
+        assert_eq!(pat.transforms[0], Transform::Fast(2.0));
+    }
+
+    #[test]
+    fn parse_transform_slow() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.X.x.").slow(2)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Slow(2.0));
+    }
+
+    #[test]
+    fn parse_transform_rev() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").rev()"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Rev);
+    }
+
+    #[test]
+    fn parse_transform_rotate() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").rotate(2)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Rotate(2));
+    }
+
+    #[test]
+    fn parse_transform_degrade() {
+        let src = r#"drums = kit("default") |> kick.pattern("XXXX").degrade(0.3)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Degrade(0.3));
+    }
+
+    #[test]
+    fn parse_transform_chain_multiple() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").fast(2).rev()"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms.len(), 2);
+        assert_eq!(pat.transforms[0], Transform::Fast(2.0));
+        assert_eq!(pat.transforms[1], Transform::Rev);
+    }
+
+    #[test]
+    fn parse_transform_every() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").every(4, rev)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(
+            pat.transforms[0],
+            Transform::Every(4, Box::new(Transform::Rev))
+        );
+    }
+
+    #[test]
+    fn parse_transform_sometimes() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").sometimes(0.5, fast(2))"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(
+            pat.transforms[0],
+            Transform::Sometimes(0.5, Box::new(Transform::Fast(2.0)))
+        );
+    }
+
+    #[test]
+    fn parse_transform_chop() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").chop(4)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Chop(4));
+    }
+
+    #[test]
+    fn parse_transform_stutter() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").stutter(3)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Stutter(3));
+    }
+
+    #[test]
+    fn parse_transform_add() {
+        let src = r#"lead = bass() |> note.pattern("X.X.").add(7)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Add(7));
+    }
+
+    #[test]
+    fn parse_transform_gain() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").gain(0.5)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Gain(0.5));
+    }
+
+    #[test]
+    fn parse_transform_legato() {
+        let src = r#"lead = bass() |> note.pattern("X.X.").legato(2.0)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert_eq!(pat.transforms[0], Transform::Legato(2.0));
+    }
+
+    #[test]
+    fn parse_no_transforms_backward_compat() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.")"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert!(pat.transforms.is_empty());
+    }
+
+    #[test]
+    fn parse_declarative_has_empty_transforms() {
+        let src = r#"
+track drums {
+  kit: default
+  section main [1 bars] {
+    kick: [X . . .]
+  }
+}
+"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert!(pat.transforms.is_empty());
+    }
+
+    #[test]
+    fn parse_transform_with_vel() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.x.").vel(0.8).fast(2)"#;
+        let prog = parse(src).unwrap();
+        let pat = &prog.tracks[0].sections[0].patterns[0];
+        assert!(pat.velocities.is_some());
+        assert_eq!(pat.transforms.len(), 1);
+        assert_eq!(pat.transforms[0], Transform::Fast(2.0));
     }
 }

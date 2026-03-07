@@ -77,6 +77,13 @@ pub enum AstChange {
         old: MappingDef,
         new: MappingDef,
     },
+    PatternTransformsChanged {
+        track_name: String,
+        section_name: String,
+        target: String,
+        old_transforms: Vec<Transform>,
+        new_transforms: Vec<Transform>,
+    },
 }
 
 /// Error when applying a diff.
@@ -290,6 +297,15 @@ fn diff_patterns(
                     target: new_pat.target.clone(),
                     old_steps: old_pat.steps.clone(),
                     new_steps: new_pat.steps.clone(),
+                });
+            }
+            if old_pat.transforms != new_pat.transforms {
+                changes.push(AstChange::PatternTransformsChanged {
+                    track_name: track_name.to_string(),
+                    section_name: section_name.to_string(),
+                    target: new_pat.target.clone(),
+                    old_transforms: old_pat.transforms.clone(),
+                    new_transforms: new_pat.transforms.clone(),
                 });
             }
         }
@@ -534,6 +550,30 @@ fn apply_change(program: &mut Program, change: &AstChange) -> Result<(), DiffErr
                 })?;
             *m = new.clone();
         }
+        AstChange::PatternTransformsChanged {
+            track_name,
+            section_name,
+            target,
+            new_transforms,
+            ..
+        } => {
+            let track = program
+                .tracks
+                .iter_mut()
+                .find(|t| t.name == *track_name)
+                .ok_or_else(|| DiffError(format!("track not found: {track_name}")))?;
+            let section = track
+                .sections
+                .iter_mut()
+                .find(|s| s.name == *section_name)
+                .ok_or_else(|| DiffError(format!("section not found: {section_name}")))?;
+            let pattern = section
+                .patterns
+                .iter_mut()
+                .find(|p| p.target == *target)
+                .ok_or_else(|| DiffError(format!("pattern not found: {target}")))?;
+            pattern.transforms = new_transforms.clone();
+        }
     }
     Ok(())
 }
@@ -601,6 +641,12 @@ fn summary_for_change(change: &AstChange) -> String {
             target_param,
             ..
         } => format!("~ Mapping {macro_name} → {target_param}"),
+        AstChange::PatternTransformsChanged {
+            track_name,
+            section_name,
+            target,
+            ..
+        } => format!("~ Transforms on '{target}' in '{track_name}/{section_name}'"),
     }
 }
 
@@ -621,6 +667,7 @@ mod tests {
                         target: "kick".to_string(),
                         steps: vec![Step::Hit, Step::Rest, Step::Rest, Step::Rest],
                         velocities: None,
+                        transforms: vec![],
                     }],
                     overrides: vec![],
                 }],
@@ -756,6 +803,7 @@ mod tests {
             target: "snare".to_string(),
             steps: vec![Step::Rest, Step::Hit, Step::Rest, Step::Rest],
             velocities: None,
+            transforms: vec![],
         });
         let diff = AstDiff::diff(&a, &b);
         assert!(diff.changes.iter().any(|c| matches!(c,
@@ -1049,5 +1097,52 @@ mod tests {
                 ..
             } if section_name == "chorus"
         ));
+    }
+
+    #[test]
+    fn diff_detects_transform_change() {
+        let a = base_program();
+        let mut b = base_program();
+        b.tracks[0].sections[0].patterns[0].transforms = vec![Transform::Fast(2.0)];
+        let diff = AstDiff::diff(&a, &b);
+        assert!(diff.changes.iter().any(|c| matches!(
+            c,
+            AstChange::PatternTransformsChanged { target, .. } if target == "kick"
+        )));
+        assert!(!diff.is_performance_safe());
+    }
+
+    #[test]
+    fn diff_apply_transform_change() {
+        let a = base_program();
+        let mut b = base_program();
+        b.tracks[0].sections[0].patterns[0].transforms = vec![Transform::Fast(2.0), Transform::Rev];
+        let diff = AstDiff::diff(&a, &b);
+        let result = diff.apply(&a).unwrap();
+        assert_eq!(
+            result.tracks[0].sections[0].patterns[0].transforms,
+            vec![Transform::Fast(2.0), Transform::Rev]
+        );
+    }
+
+    #[test]
+    fn diff_no_transform_change_when_equal() {
+        let a = base_program();
+        let b = base_program();
+        let diff = AstDiff::diff(&a, &b);
+        assert!(!diff
+            .changes
+            .iter()
+            .any(|c| matches!(c, AstChange::PatternTransformsChanged { .. })));
+    }
+
+    #[test]
+    fn diff_transform_summary() {
+        let a = base_program();
+        let mut b = base_program();
+        b.tracks[0].sections[0].patterns[0].transforms = vec![Transform::Rev];
+        let diff = AstDiff::diff(&a, &b);
+        let summaries = diff.summaries();
+        assert!(summaries.iter().any(|s| s.contains("Transforms")));
     }
 }

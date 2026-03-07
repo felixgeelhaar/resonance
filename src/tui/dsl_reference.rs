@@ -127,6 +127,34 @@ impl DslReference {
         lines.push(l("  attack        Note attack time"));
         lines.push(l(""));
 
+        lines.push(h("FUNCTIONAL CHAIN SYNTAX"));
+        lines.push(l("  name = instrument() |> target.method(args)"));
+        lines.push(l("  drums = kit(\"default\")"));
+        lines.push(l("    |> kick.pattern(\"X.x.X.x.\")"));
+        lines.push(l("    |> snare.pattern(\"..X...X.\")"));
+        lines.push(l("  Methods: .pattern(\"...\"), .at([1,3]), .every(N)"));
+        lines.push(l(""));
+
+        lines.push(h("PATTERN TRANSFORMS"));
+        lines.push(l("  .fast(N)          Repeat pattern N times (speed up)"));
+        lines.push(l(
+            "  .slow(N)          Keep first 1/N of pattern (slow down)",
+        ));
+        lines.push(l("  .rev()            Reverse pattern order"));
+        lines.push(l("  .rotate(N)        Shift steps right by N positions"));
+        lines.push(l("  .degrade(P)       Remove steps randomly (P = 0.0-1.0)"));
+        lines.push(l("  .chop(N)          Subdivide each step into N parts"));
+        lines.push(l("  .stutter(N)       Repeat each hit N times in place"));
+        lines.push(l("  .every(N, T)      Apply transform T every N cycles"));
+        lines.push(l(
+            "  .sometimes(P, T)  Apply transform T with probability P",
+        ));
+        lines.push(l("  .add(N)           Transpose notes by N semitones"));
+        lines.push(l("  .gain(F)          Scale velocity by factor F"));
+        lines.push(l("  .legato(F)        Scale duration by factor F"));
+        lines.push(l("  Example: kick.pattern(\"X.x.\").fast(2).rev()"));
+        lines.push(l(""));
+
         lines.push(h("EXAMPLE"));
         lines.push(l("  tempo 124"));
         lines.push(l("  macro feel = 0.4"));

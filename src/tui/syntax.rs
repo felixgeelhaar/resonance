@@ -26,6 +26,19 @@ const KEYWORDS: &[&str] = &[
     "limiter",
     "enabled",
     "plugin",
+    // Functional chain transforms
+    "fast",
+    "slow",
+    "rev",
+    "rotate",
+    "degrade",
+    "every",
+    "sometimes",
+    "chop",
+    "stutter",
+    "add",
+    "gain",
+    "legato",
 ];
 
 /// Highlight a single line of DSL source into styled spans.

@@ -49,12 +49,42 @@ pub struct MappingOverrideDef {
     pub curve: CurveKind,
 }
 
+/// A pattern transform applied in functional chain syntax.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Transform {
+    /// `.fast(2)` — repeat pattern N times (double speed).
+    Fast(f64),
+    /// `.slow(2)` — keep first 1/N of pattern (half speed).
+    Slow(f64),
+    /// `.rev()` — reverse pattern order.
+    Rev,
+    /// `.rotate(2)` — rotate steps right by N positions.
+    Rotate(i32),
+    /// `.degrade(0.3)` — randomly remove steps at given probability.
+    Degrade(f64),
+    /// `.every(4, rev)` — apply inner transform every N cycles.
+    Every(u32, Box<Transform>),
+    /// `.sometimes(0.5, fast(2))` — apply inner transform with probability.
+    Sometimes(f64, Box<Transform>),
+    /// `.chop(4)` — subdivide each step into N equal parts.
+    Chop(u32),
+    /// `.stutter(3)` — repeat each non-rest step N times in place.
+    Stutter(u32),
+    /// `.add(7)` — transpose notes by N semitones (post-event).
+    Add(i32),
+    /// `.gain(0.5)` — scale velocity by factor (post-event).
+    Gain(f64),
+    /// `.legato(2.0)` — scale duration by factor (post-event).
+    Legato(f64),
+}
+
 /// A pattern for a specific target (drum hit or note line).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternDef {
     pub target: String,
     pub steps: Vec<Step>,
     pub velocities: Option<Vec<f64>>,
+    pub transforms: Vec<Transform>,
 }
 
 /// A single step in a pattern.

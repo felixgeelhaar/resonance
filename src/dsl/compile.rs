@@ -3,6 +3,10 @@
 //! Transforms a [`Program`] AST into a [`CompiledSong`] containing
 //! tempo, events, track definitions, macros, and mappings.
 
+use rand::Rng;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
+
 use crate::event::types::{Event, TrackId};
 use crate::event::Beat;
 
@@ -102,8 +106,17 @@ fn compile_pattern(
     offset: Beat,
     length_bars: u32,
 ) -> Result<Vec<Event>, CompileError> {
+    // Apply pre-event transforms (modify steps/velocities before event generation)
+    let mut steps = pattern.steps.clone();
+    let mut velocities = pattern.velocities.clone();
+    let seed = compute_pattern_seed(&pattern.target, &steps);
+
+    for transform in &pattern.transforms {
+        apply_step_transform(&mut steps, &mut velocities, transform, seed);
+    }
+
     let mut events = Vec::new();
-    let num_steps = pattern.steps.len();
+    let num_steps = steps.len();
     if num_steps == 0 {
         return Ok(events);
     }
@@ -112,12 +125,12 @@ fn compile_pattern(
     let total_beats = length_bars as f64 * 4.0;
     let step_duration_beats = total_beats / num_steps as f64;
 
-    for (i, step) in pattern.steps.iter().enumerate() {
+    for (i, step) in steps.iter().enumerate() {
         let time_beats = i as f64 * step_duration_beats;
         let time = offset + Beat::from_beats_f64(time_beats);
         let duration = Beat::from_beats_f64(step_duration_beats);
 
-        let velocity = if let Some(ref vels) = pattern.velocities {
+        let velocity = if let Some(ref vels) = velocities {
             if i < vels.len() {
                 vels[i] as f32
             } else {
@@ -154,7 +167,7 @@ fn compile_pattern(
                 }
             }
             Step::Accent(v) => {
-                let vel = if pattern.velocities.is_some() {
+                let vel = if velocities.is_some() {
                     velocity
                 } else {
                     *v as f32
@@ -181,7 +194,200 @@ fn compile_pattern(
         }
     }
 
+    // Apply post-event transforms (modify events after generation)
+    for transform in &pattern.transforms {
+        apply_event_transform(&mut events, transform);
+    }
+
     Ok(events)
+}
+
+/// Deterministic seed from pattern target and steps for reproducible randomness.
+fn compute_pattern_seed(target: &str, steps: &[Step]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+    for b in target.bytes() {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x0100_0000_01b3); // FNV prime
+    }
+    for (i, step) in steps.iter().enumerate() {
+        hash ^= i as u64;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+        let step_val = match step {
+            Step::Hit => 1u64,
+            Step::Rest => 0,
+            Step::Accent(_) => 2,
+            Step::Note(_) => 3,
+        };
+        hash ^= step_val;
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// Apply a transform that modifies steps/velocities (pre-event).
+fn apply_step_transform(
+    steps: &mut Vec<Step>,
+    velocities: &mut Option<Vec<f64>>,
+    transform: &Transform,
+    seed: u64,
+) {
+    match transform {
+        Transform::Fast(n) => {
+            if *n <= 0.0 || steps.is_empty() {
+                return;
+            }
+            let repeats = n.round().max(1.0) as usize;
+            let original = steps.clone();
+            steps.clear();
+            for _ in 0..repeats {
+                steps.extend(original.iter().cloned());
+            }
+            if let Some(vels) = velocities {
+                let original_vels = vels.clone();
+                vels.clear();
+                for _ in 0..repeats {
+                    vels.extend(original_vels.iter());
+                }
+            }
+        }
+        Transform::Slow(n) => {
+            if *n <= 0.0 || steps.is_empty() {
+                return;
+            }
+            let keep = (steps.len() as f64 / n).round().max(1.0) as usize;
+            steps.truncate(keep);
+            if let Some(vels) = velocities {
+                vels.truncate(keep);
+            }
+        }
+        Transform::Rev => {
+            steps.reverse();
+            if let Some(vels) = velocities {
+                vels.reverse();
+            }
+        }
+        Transform::Rotate(n) => {
+            if steps.is_empty() {
+                return;
+            }
+            let len = steps.len();
+            let shift = ((*n % len as i32) + len as i32) as usize % len;
+            steps.rotate_right(shift);
+            if let Some(vels) = velocities {
+                if vels.len() == len {
+                    vels.rotate_right(shift);
+                }
+            }
+        }
+        Transform::Degrade(prob) => {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            for step in steps.iter_mut() {
+                if rng.gen::<f64>() < *prob {
+                    *step = Step::Rest;
+                }
+            }
+        }
+        Transform::Every(n, inner) => {
+            // In compile-time expansion, we have one cycle of steps.
+            // `every(N, t)` applies the transform to 1 out of N repetitions.
+            // Since we compile a single cycle, apply if cycle 0 mod N == 0
+            // (first cycle gets the transform).
+            if *n > 0 {
+                apply_step_transform(steps, velocities, inner, seed);
+            }
+        }
+        Transform::Sometimes(prob, inner) => {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            if rng.gen::<f64>() < *prob {
+                apply_step_transform(steps, velocities, inner, seed);
+            }
+        }
+        Transform::Chop(n) => {
+            if *n == 0 || steps.is_empty() {
+                return;
+            }
+            let mut new_steps = Vec::new();
+            for step in steps.iter() {
+                match step {
+                    Step::Rest => {
+                        for _ in 0..*n {
+                            new_steps.push(Step::Rest);
+                        }
+                    }
+                    _ => {
+                        for _ in 0..*n {
+                            new_steps.push(step.clone());
+                        }
+                    }
+                }
+            }
+            *steps = new_steps;
+            // Velocities: expand each velocity N times
+            if let Some(vels) = velocities {
+                let mut new_vels = Vec::new();
+                for v in vels.iter() {
+                    for _ in 0..*n {
+                        new_vels.push(*v);
+                    }
+                }
+                *vels = new_vels;
+            }
+        }
+        Transform::Stutter(n) => {
+            if *n == 0 || steps.is_empty() {
+                return;
+            }
+            let original = steps.clone();
+            let mut new_steps = Vec::with_capacity(original.len());
+            let mut i = 0;
+            while i < original.len() {
+                match &original[i] {
+                    Step::Rest => {
+                        new_steps.push(Step::Rest);
+                        i += 1;
+                    }
+                    step => {
+                        // Repeat this step N times, consuming subsequent positions
+                        for _ in 0..*n {
+                            new_steps.push(step.clone());
+                        }
+                        // Skip the next N-1 steps (they get replaced)
+                        i += (*n as usize).min(original.len() - i);
+                    }
+                }
+            }
+            *steps = new_steps;
+            *velocities = None; // Velocities invalidated by stutter
+        }
+        // Post-event transforms are handled separately
+        Transform::Add(_) | Transform::Gain(_) | Transform::Legato(_) => {}
+    }
+}
+
+/// Apply a transform that modifies events (post-event).
+fn apply_event_transform(events: &mut [Event], transform: &Transform) {
+    match transform {
+        Transform::Add(semitones) => {
+            for event in events.iter_mut() {
+                if let crate::event::NoteOrSample::Note(ref mut midi) = event.trigger {
+                    *midi = (*midi as i32 + semitones).clamp(0, 127) as u8;
+                }
+            }
+        }
+        Transform::Gain(factor) => {
+            for event in events.iter_mut() {
+                event.velocity = (event.velocity * *factor as f32).clamp(0.0, 1.0);
+            }
+        }
+        Transform::Legato(factor) => {
+            for event in events.iter_mut() {
+                let ticks = event.duration.ticks();
+                let new_ticks = (ticks as f64 * factor).round() as u64;
+                event.duration = Beat::from_ticks(new_ticks);
+            }
+        }
+        _ => {} // Step transforms already handled
+    }
 }
 
 #[cfg(test)]
@@ -524,5 +730,149 @@ track drums {
         let program = Compiler::parse(src).unwrap();
         let song = compile_program(&program).unwrap();
         assert!(song.layers.is_empty());
+    }
+
+    // --- Transform compilation tests ---
+
+    #[test]
+    fn compile_transform_fast_doubles_events() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.X.").fast(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: X.X. = 2 hits. fast(2) doubles to X.X.X.X. = 4 hits
+        assert_eq!(song.events.len(), 4);
+    }
+
+    #[test]
+    fn compile_transform_slow_halves_events() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.X.X.X.").slow(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: X.X.X.X. = 4 hits. slow(2) keeps first 4 steps: X.X. = 2 hits
+        assert_eq!(song.events.len(), 2);
+    }
+
+    #[test]
+    fn compile_transform_rev_reverses_order() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").rev()"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: X... (hit at pos 0). rev: ...X (hit at pos 3)
+        assert_eq!(song.events.len(), 1);
+        // The hit should now be at the last position
+        assert!(song.events[0].time > Beat::ZERO);
+    }
+
+    #[test]
+    fn compile_transform_rotate() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").rotate(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: X... rotate(2) = ..X.
+        assert_eq!(song.events.len(), 1);
+        assert!(song.events[0].time > Beat::ZERO);
+    }
+
+    #[test]
+    fn compile_transform_degrade_deterministic() {
+        let src = r#"drums = kit("default") |> kick.pattern("XXXXXXXX").degrade(0.5)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song1 = compile_program(&program).unwrap();
+        let song2 = compile_program(&program).unwrap();
+        // Same seed → same result
+        assert_eq!(song1.events.len(), song2.events.len());
+        // Should remove roughly half the hits
+        assert!(song1.events.len() < 8);
+        assert!(!song1.events.is_empty());
+    }
+
+    #[test]
+    fn compile_transform_chop_subdivides() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.").chop(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // Original: X. → chop(2) → XX.. = 2 hits
+        assert_eq!(song.events.len(), 2);
+    }
+
+    #[test]
+    fn compile_transform_stutter_repeats() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").stutter(2)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // X... → stutter(2) → XX.. = 2 hits
+        assert_eq!(song.events.len(), 2);
+    }
+
+    #[test]
+    fn compile_transform_add_transposes() {
+        let src = r#"lead = bass() |> note.pattern("X.X.").add(7)"#;
+        // "note" as target won't parse as a note name, so hits produce no events
+        // Use a proper note pattern instead
+        let src2 = r#"
+track bass {
+  bass
+  section main [1 bars] {
+    note: [C3 . . .]
+  }
+}
+"#;
+        let program = Compiler::parse(src2).unwrap();
+        let mut song = compile_program(&program).unwrap();
+        // C3 = MIDI 48, manually apply add transform
+        assert_eq!(song.events[0].trigger, NoteOrSample::Note(48));
+
+        // Now test via functional syntax with a note target
+        // Use the transform on compiled events directly
+        apply_event_transform(&mut song.events, &Transform::Add(7));
+        assert_eq!(song.events[0].trigger, NoteOrSample::Note(55)); // C3 + 7 = G3
+    }
+
+    #[test]
+    fn compile_transform_gain_scales_velocity() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").gain(0.5)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.events.len(), 1);
+        // Default Hit velocity is 0.85, gain(0.5) → 0.425
+        assert!((song.events[0].velocity - 0.425).abs() < 0.01);
+    }
+
+    #[test]
+    fn compile_transform_legato_scales_duration() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").legato(2.0)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.events.len(), 1);
+        // 4 steps over 2 bars (8 beats) = 2 beats per step. legato(2.0) → 4 beats.
+        let expected_duration = Beat::from_beats_f64(4.0);
+        assert_eq!(song.events[0].duration, expected_duration);
+    }
+
+    #[test]
+    fn compile_transform_chain_fast_rev() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").fast(2).rev()"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // X... fast(2) → X...X... (2 hits). rev → ...X...X (still 2 hits)
+        assert_eq!(song.events.len(), 2);
+    }
+
+    #[test]
+    fn compile_transform_every_applies_inner() {
+        let src = r#"drums = kit("default") |> kick.pattern("X...").every(4, rev)"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        // every(4, rev) applies rev to first cycle — X... → ...X
+        assert_eq!(song.events.len(), 1);
+        assert!(song.events[0].time > Beat::ZERO);
+    }
+
+    #[test]
+    fn compile_no_transforms_unchanged() {
+        let src = r#"drums = kit("default") |> kick.pattern("X.X.")"#;
+        let program = Compiler::parse(src).unwrap();
+        let song = compile_program(&program).unwrap();
+        assert_eq!(song.events.len(), 2);
     }
 }
