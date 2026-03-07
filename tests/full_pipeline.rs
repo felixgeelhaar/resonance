@@ -321,3 +321,52 @@ fn recompile_changes_output() {
         "recompiling with different pattern should produce different audio"
     );
 }
+
+// =============================================================================
+// Test 11: Mini-notation produces audio through full pipeline
+// =============================================================================
+
+#[test]
+fn mini_notation_produces_audio() {
+    // Functional chain with mini-notation: [X.]*2 = X.X. (4 steps, 2 hits)
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("[X.]*2")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "mini-notation [X.]*2 should produce audible audio"
+    );
+}
+
+// =============================================================================
+// Test 12: Mini-notation matches equivalent hand-written pattern
+// =============================================================================
+
+#[test]
+fn mini_notation_matches_expanded_pattern() {
+    // [X.]*2 should expand to X.X. — identical to writing "X.X." directly
+    let src_mini = r#"tempo 128
+drums = kit("default") |> kick.pattern("[X.]*2")"#;
+    let src_expanded = r#"tempo 128
+drums = kit("default") |> kick.pattern("X.X.")"#;
+
+    let (mut sched_mini, mut rf_mini) = build_pipeline(src_mini);
+    let (mut sched_expanded, mut rf_expanded) = build_pipeline(src_expanded);
+
+    let blocks_mini = render_blocks(&mut sched_mini, &mut rf_mini, 30);
+    let blocks_expanded = render_blocks(&mut sched_expanded, &mut rf_expanded, 30);
+
+    assert_eq!(blocks_mini.len(), blocks_expanded.len());
+    for (i, (a, b)) in blocks_mini.iter().zip(blocks_expanded.iter()).enumerate() {
+        assert_eq!(
+            a, b,
+            "block {i}: mini-notation [X.]*2 must produce identical audio to expanded X.X."
+        );
+    }
+}
