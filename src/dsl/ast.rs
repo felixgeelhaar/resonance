@@ -10,6 +10,10 @@ pub struct Program {
     pub macros: Vec<MacroDef>,
     pub mappings: Vec<MappingDef>,
     pub layers: Vec<LayerDef>,
+    /// Number of cycles to expand (default None = 1).
+    pub cycles: Option<u32>,
+    /// Arrangement plan for auto-advancing sections.
+    pub arrangement: Option<ArrangementDef>,
 }
 
 /// A track definition with instrument and sections.
@@ -18,6 +22,15 @@ pub struct TrackDef {
     pub name: String,
     pub instrument: InstrumentRef,
     pub sections: Vec<SectionDef>,
+    /// Optional MIDI output routing.
+    pub midi_out: Option<MidiOutDef>,
+}
+
+/// MIDI output routing definition.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MidiOutDef {
+    pub device: String,
+    pub channel: u8,
 }
 
 /// Reference to a built-in instrument.
@@ -29,6 +42,8 @@ pub enum InstrumentRef {
     Pluck,
     Noise,
     Plugin(String),
+    Fm,
+    Wavetable(String),
 }
 
 /// A section within a track.
@@ -102,6 +117,8 @@ pub enum Step {
     Subdivided(Vec<Step>),
     /// Ratchet: `X^3` plays 3 rapid hits in 1 step.
     Ratchet(Box<Step>, u32),
+    /// Stacked: `K+H` plays multiple targets simultaneously.
+    Stacked(Vec<String>),
 }
 
 /// A macro definition.
@@ -135,4 +152,17 @@ pub enum CurveKind {
     Log,
     Exp,
     Smoothstep,
+}
+
+/// An arrangement plan for auto-advancing sections.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrangementDef {
+    pub entries: Vec<ArrangementEntry>,
+}
+
+/// A single entry in an arrangement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ArrangementEntry {
+    pub section_name: String,
+    pub repeats: u32,
 }

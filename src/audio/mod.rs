@@ -8,6 +8,7 @@ pub mod buffer;
 pub mod callback;
 pub mod command;
 pub mod effects;
+pub mod export;
 pub mod limiter;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};

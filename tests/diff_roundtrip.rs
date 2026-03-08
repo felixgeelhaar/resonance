@@ -107,6 +107,7 @@ fn structural_diff() {
         name: "bass".to_string(),
         instrument: InstrumentRef::Bass,
         sections: vec![],
+        midi_out: None,
     });
 
     let diff = AstDiff::diff(&old, &new);
@@ -123,6 +124,7 @@ fn diff_summaries() {
         name: "bass".to_string(),
         instrument: InstrumentRef::Bass,
         sections: vec![],
+        midi_out: None,
     });
 
     let diff = AstDiff::diff(&old, &new);

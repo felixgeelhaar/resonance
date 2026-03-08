@@ -62,6 +62,8 @@ impl InstrumentRouter {
                 InstrumentRef::Pluck => Box::new(PluckSynth::new(seed)),
                 InstrumentRef::Noise => Box::new(NoiseGen::new(seed)),
                 InstrumentRef::Plugin(_) => Box::new(BassSynth::new()), // fallback
+                InstrumentRef::Fm => Box::new(super::FmSynth::new()),
+                InstrumentRef::Wavetable(name) => Box::new(super::WavetableSynth::new(name)),
             };
             router.add_route(*track_id, instrument);
         }
@@ -96,6 +98,8 @@ impl InstrumentRouter {
                 InstrumentRef::Plugin(name) => plugin_registry
                     .create_instrument(name, sample_rate)
                     .unwrap_or_else(|| Box::new(BassSynth::new())),
+                InstrumentRef::Fm => Box::new(super::FmSynth::new()),
+                InstrumentRef::Wavetable(name) => Box::new(super::WavetableSynth::new(name)),
             };
             router.add_route(*track_id, instrument);
         }
@@ -173,6 +177,7 @@ mod tests {
                     name: "drums".to_string(),
                     instrument: InstrumentRef::Kit("default".to_string()),
                     sections: vec![],
+                    midi_out: None,
                 },
             ),
             (
@@ -181,6 +186,7 @@ mod tests {
                     name: "bass".to_string(),
                     instrument: InstrumentRef::Bass,
                     sections: vec![],
+                    midi_out: None,
                 },
             ),
         ];
@@ -229,6 +235,7 @@ mod tests {
                     name: "drums".to_string(),
                     instrument: InstrumentRef::Kit("default".to_string()),
                     sections: vec![],
+                    midi_out: None,
                 },
             ),
             (
@@ -237,6 +244,7 @@ mod tests {
                     name: "bass".to_string(),
                     instrument: InstrumentRef::Bass,
                     sections: vec![],
+                    midi_out: None,
                 },
             ),
         ];
@@ -262,6 +270,7 @@ mod tests {
                 name: "drums".to_string(),
                 instrument: InstrumentRef::Kit("./nonexistent_path_xyz".to_string()),
                 sections: vec![],
+                midi_out: None,
             },
         )];
 
@@ -282,6 +291,7 @@ mod tests {
                 name: "drums".to_string(),
                 instrument: InstrumentRef::Kit("default".to_string()),
                 sections: vec![],
+                midi_out: None,
             },
         )];
 
@@ -306,6 +316,7 @@ mod tests {
                 name: "lead".to_string(),
                 instrument: InstrumentRef::Plugin("nonexistent".to_string()),
                 sections: vec![],
+                midi_out: None,
             },
         )];
 

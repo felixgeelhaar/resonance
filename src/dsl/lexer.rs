@@ -310,6 +310,11 @@ impl Lexer {
             "vel" => TokenKind::Vel,
             "bars" => TokenKind::Bars,
             "plugin" => TokenKind::Plugin,
+            "fm" => TokenKind::Fm,
+            "wavetable" => TokenKind::Wavetable,
+            "cycles" => TokenKind::Cycles,
+            "arrangement" => TokenKind::Arrangement,
+            "midi_out" => TokenKind::MidiOut,
             _ => TokenKind::Ident(s),
         };
 
@@ -362,12 +367,86 @@ impl Lexer {
             }
         }
 
-        // Step pattern (only X, x, .)
-        let all_steps = parts
-            .iter()
-            .all(|p| p.len() == 1 && matches!(p.chars().next(), Some('X' | 'x' | '.')));
+        // Arrangement-style content: "name xN, name xN, ..."
+        // Detected by presence of commas and "xN" identifiers
+        let is_arrangement = trimmed.contains(',')
+            && parts.iter().any(|p| {
+                let p = p.trim_end_matches(',');
+                (p.starts_with('x') || p.starts_with('X'))
+                    && p.len() > 1
+                    && p[1..].chars().all(|c| c.is_ascii_digit())
+            });
+        if is_arrangement {
+            // Emit as LBracket + individual tokens + RBracket
+            // Split by comma, then by whitespace
+            let entries: Vec<&str> = trimmed.split(',').map(|s| s.trim()).collect();
+            for entry in &entries {
+                let entry_parts: Vec<&str> = entry.split_whitespace().collect();
+                for p in entry_parts {
+                    self.pending.push(Token {
+                        kind: TokenKind::Ident(p.to_string()),
+                        line,
+                        col,
+                    });
+                }
+                // Add comma between entries (not after last)
+                if entry != entries.last().unwrap() {
+                    self.pending.push(Token {
+                        kind: TokenKind::Comma,
+                        line,
+                        col,
+                    });
+                }
+            }
+            self.pending.push(Token {
+                kind: TokenKind::RBracket,
+                line,
+                col,
+            });
+            return Ok(Token {
+                kind: TokenKind::LBracket,
+                line,
+                col,
+            });
+        }
 
-        if all_steps && !parts.is_empty() {
+        // Check for stacked patterns (contains '+')
+        let has_stacked = parts.iter().any(|p| p.contains('+'));
+
+        // Step pattern (only X, x, . or stacked like K+H)
+        let all_steps = parts.iter().all(|p| {
+            if p.contains('+') {
+                // All parts of a stacked step must be identifiers
+                p.split('+').all(|s| !s.is_empty())
+            } else {
+                p.len() == 1 && matches!(p.chars().next(), Some('X' | 'x' | '.'))
+            }
+        });
+
+        if all_steps && !parts.is_empty() && has_stacked {
+            let steps: Vec<StepToken> = parts
+                .iter()
+                .map(|p| {
+                    if p.contains('+') {
+                        StepToken::Stacked(p.split('+').map(|s| s.to_string()).collect())
+                    } else {
+                        match p.chars().next().unwrap() {
+                            'X' => StepToken::Accent,
+                            'x' => StepToken::Ghost,
+                            '.' => StepToken::Rest,
+                            _ => StepToken::Rest,
+                        }
+                    }
+                })
+                .collect();
+            return Ok(Token {
+                kind: TokenKind::StepPattern(steps),
+                line,
+                col,
+            });
+        }
+
+        if all_steps && !parts.is_empty() && !has_stacked {
             let steps: Vec<StepToken> = parts
                 .iter()
                 .map(|p| match p.chars().next().unwrap() {

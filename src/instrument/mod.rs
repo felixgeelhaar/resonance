@@ -3,6 +3,8 @@
 pub mod bass_synth;
 pub mod drum_kit;
 pub mod envelope;
+pub mod filter;
+pub mod fm_synth;
 pub mod noise_gen;
 pub mod oscillator;
 pub mod param_defs;
@@ -11,15 +13,18 @@ pub mod poly_synth;
 pub mod router;
 pub mod sample;
 pub mod synth;
+pub mod wavetable;
 
 pub use bass_synth::BassSynth;
 pub use drum_kit::DrumKit;
+pub use fm_synth::FmSynth;
 pub use noise_gen::NoiseGen;
 pub use pluck_synth::PluckSynth;
 pub use poly_synth::PolySynth;
 pub use router::InstrumentRouter;
 pub use sample::{load_kit_from_directory, SampleData, SampleError};
 pub use synth::build_default_kit;
+pub use wavetable::WavetableSynth;
 
 use crate::event::{Event, RenderContext};
 use std::collections::HashMap;

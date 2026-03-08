@@ -671,6 +671,7 @@ mod tests {
                     }],
                     overrides: vec![],
                 }],
+                midi_out: None,
             }],
             macros: vec![MacroDef {
                 name: "filter".to_string(),
@@ -683,6 +684,8 @@ mod tests {
                 curve: CurveKind::Linear,
             }],
             layers: vec![],
+            cycles: None,
+            arrangement: None,
         }
     }
 
@@ -717,6 +720,7 @@ mod tests {
             name: "bass".to_string(),
             instrument: InstrumentRef::Bass,
             sections: vec![],
+            midi_out: None,
         });
         let diff = AstDiff::diff(&a, &b);
         assert!(diff
@@ -942,6 +946,7 @@ mod tests {
                     name: "bass".to_string(),
                     instrument: InstrumentRef::Bass,
                     sections: vec![],
+                    midi_out: None,
                 },
             }],
         };
@@ -1000,6 +1005,7 @@ mod tests {
                     name: "x".to_string(),
                     instrument: InstrumentRef::Bass,
                     sections: vec![],
+                    midi_out: None,
                 },
             }],
         };
@@ -1036,6 +1042,7 @@ mod tests {
             name: "bass".to_string(),
             instrument: InstrumentRef::Bass,
             sections: vec![],
+            midi_out: None,
         });
         b.tracks[0].sections[0].length_bars = 4;
         b.tracks[0].sections[0].patterns[0].steps =

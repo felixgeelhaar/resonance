@@ -65,6 +65,26 @@ pub fn reverb_decay() -> ParamId {
     ParamId("reverb_decay".to_string())
 }
 
+/// SVF filter resonance (Q factor, 0.5–20.0, default: 0.707).
+pub fn resonance() -> ParamId {
+    ParamId("resonance".to_string())
+}
+
+/// FM synth: modulator-to-carrier frequency ratio (default: 2.0).
+pub fn fm_ratio() -> ParamId {
+    ParamId("fm_ratio".to_string())
+}
+
+/// FM synth: modulation index (depth, 0.0–8.0, default: 1.0).
+pub fn fm_index() -> ParamId {
+    ParamId("fm_index".to_string())
+}
+
+/// Wavetable synth: morph position (0.0–1.0, default: 0.0).
+pub fn morph() -> ParamId {
+    ParamId("morph".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,6 +98,10 @@ mod tests {
         assert_eq!(release(), release());
         assert_eq!(damping(), damping());
         assert_eq!(brightness(), brightness());
+        assert_eq!(resonance(), resonance());
+        assert_eq!(fm_ratio(), fm_ratio());
+        assert_eq!(fm_index(), fm_index());
+        assert_eq!(morph(), morph());
     }
 
     #[test]
@@ -95,6 +119,10 @@ mod tests {
             delay_feedback(),
             delay_time(),
             reverb_decay(),
+            resonance(),
+            fm_ratio(),
+            fm_index(),
+            morph(),
         ];
         for i in 0..all.len() {
             for j in (i + 1)..all.len() {
@@ -117,5 +145,9 @@ mod tests {
         assert_eq!(delay_feedback().0, "delay_feedback");
         assert_eq!(delay_time().0, "delay_time");
         assert_eq!(reverb_decay().0, "reverb_decay");
+        assert_eq!(resonance().0, "resonance");
+        assert_eq!(fm_ratio().0, "fm_ratio");
+        assert_eq!(fm_index().0, "fm_index");
+        assert_eq!(morph().0, "morph");
     }
 }

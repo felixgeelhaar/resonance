@@ -63,9 +63,10 @@ impl GridZoom {
 #[derive(Debug, Clone, PartialEq)]
 pub enum GridCell {
     Empty,
-    Hit(f32), // velocity
-    Note(u8), // MIDI note
-    Cursor,   // playback cursor position
+    Hit(f32),    // velocity
+    Note(u8),    // MIDI note
+    Stacked(u8), // multiple simultaneous hits (count)
+    Cursor,      // playback cursor position
 }
 
 /// Grid projection of events for a single track.
@@ -130,9 +131,14 @@ pub fn project_events(
             (name, vec![GridCell::Empty; total_steps])
         });
 
-        entry.1[step] = match &event.trigger {
-            NoteOrSample::Sample(_) => GridCell::Hit(event.velocity),
-            NoteOrSample::Note(n) => GridCell::Note(*n),
+        let existing = &entry.1[step];
+        entry.1[step] = match existing {
+            GridCell::Empty | GridCell::Cursor => match &event.trigger {
+                NoteOrSample::Sample(_) => GridCell::Hit(event.velocity),
+                NoteOrSample::Note(n) => GridCell::Note(*n),
+            },
+            GridCell::Hit(_) | GridCell::Note(_) => GridCell::Stacked(2),
+            GridCell::Stacked(n) => GridCell::Stacked(n + 1),
         };
     }
 

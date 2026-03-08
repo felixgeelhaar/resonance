@@ -23,6 +23,8 @@ impl Parser {
         let mut macros = Vec::new();
         let mut mappings = Vec::new();
         let mut layers = Vec::new();
+        let mut cycles = None;
+        let mut arrangement = None;
 
         self.skip_newlines();
 
@@ -48,6 +50,15 @@ impl Parser {
                 TokenKind::Layer => {
                     layers.push(self.parse_layer()?);
                 }
+                TokenKind::Cycles => {
+                    self.advance();
+                    let n = self.expect_integer()? as u32;
+                    cycles = Some(n);
+                    self.skip_newlines();
+                }
+                TokenKind::Arrangement => {
+                    arrangement = Some(self.parse_arrangement()?);
+                }
                 TokenKind::Ident(_) => {
                     // Functional chain syntax: name = ...
                     let track = self.parse_functional_track()?;
@@ -71,6 +82,8 @@ impl Parser {
             macros,
             mappings,
             layers,
+            cycles,
+            arrangement,
         })
     }
 
@@ -90,6 +103,22 @@ impl Parser {
         let instrument = self.parse_instrument_ref()?;
         self.skip_newlines();
 
+        // Optional midi_out: "device" channel N
+        let midi_out = if self.check(TokenKind::MidiOut) {
+            self.advance();
+            self.expect(TokenKind::Colon)?;
+            let device = self.expect_string_literal()?;
+            let _channel_kw = self.expect_ident()?; // "channel"
+            let ch = self.expect_integer()? as u8;
+            self.skip_newlines();
+            Some(MidiOutDef {
+                device,
+                channel: ch,
+            })
+        } else {
+            None
+        };
+
         let mut sections = Vec::new();
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
             self.skip_newlines();
@@ -105,6 +134,7 @@ impl Parser {
             name,
             instrument,
             sections,
+            midi_out,
         })
     }
 
@@ -138,6 +168,16 @@ impl Parser {
                 self.expect(TokenKind::Colon)?;
                 let name = self.expect_ident()?;
                 Ok(InstrumentRef::Plugin(name))
+            }
+            TokenKind::Fm => {
+                self.advance();
+                Ok(InstrumentRef::Fm)
+            }
+            TokenKind::Wavetable => {
+                self.advance();
+                self.expect(TokenKind::Colon)?;
+                let name = self.expect_ident()?;
+                Ok(InstrumentRef::Wavetable(name))
             }
             TokenKind::Ident(s) if s == "kit" => {
                 self.advance();
@@ -337,6 +377,7 @@ impl Parser {
                         StepToken::Hit | StepToken::Accent => Step::Hit,
                         StepToken::Ghost => Step::Accent(0.5),
                         StepToken::Rest => Step::Rest,
+                        StepToken::Stacked(targets) => Step::Stacked(targets.clone()),
                     })
                     .collect();
                 self.advance();
@@ -373,6 +414,7 @@ impl Parser {
                         StepToken::Rest => 0.0,
                         StepToken::Hit | StepToken::Accent => 1.0,
                         StepToken::Ghost => 0.5,
+                        StepToken::Stacked(_) => 0.85,
                     })
                     .collect();
                 self.advance();
@@ -418,6 +460,7 @@ impl Parser {
             name,
             instrument,
             sections,
+            midi_out: None,
         })
     }
 
@@ -469,6 +512,21 @@ impl Parser {
                     self.expect(TokenKind::RParen)?;
                 }
                 Ok(InstrumentRef::Noise)
+            }
+            TokenKind::Fm => {
+                self.advance();
+                if self.check(TokenKind::LParen) {
+                    self.advance();
+                    self.expect(TokenKind::RParen)?;
+                }
+                Ok(InstrumentRef::Fm)
+            }
+            TokenKind::Wavetable => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let name = self.expect_string_literal()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(InstrumentRef::Wavetable(name))
             }
             _ => Err(CompileError::parse(
                 format!("expected instrument, got {:?}", t.kind),
@@ -797,6 +855,39 @@ impl Parser {
         })
     }
 
+    /// Parse an arrangement: `arrangement [name xN, name xN, ...]`
+    fn parse_arrangement(&mut self) -> Result<ArrangementDef, CompileError> {
+        self.expect(TokenKind::Arrangement)?;
+        self.expect(TokenKind::LBracket)?;
+
+        let mut entries = Vec::new();
+        loop {
+            self.skip_newlines();
+            if self.check(TokenKind::RBracket) {
+                break;
+            }
+            let section_name = self.expect_ident()?;
+            // expect "xN" — the ident "x" followed by N, or "xN" as a single ident
+            let x_tok = self.expect_ident()?;
+            let repeats = if x_tok.starts_with('x') || x_tok.starts_with('X') {
+                x_tok[1..].parse::<u32>().unwrap_or(1)
+            } else {
+                1
+            };
+            entries.push(ArrangementEntry {
+                section_name,
+                repeats,
+            });
+            if self.check(TokenKind::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(TokenKind::RBracket)?;
+        self.skip_newlines();
+
+        Ok(ArrangementDef { entries })
+    }
+
     fn expect_string_literal(&mut self) -> Result<String, CompileError> {
         let t = self.peek();
         match &t.kind {
@@ -884,6 +975,8 @@ impl Parser {
             TokenKind::Noise => "noise".to_string(),
             TokenKind::Kit => "kit".to_string(),
             TokenKind::Plugin => "plugin".to_string(),
+            TokenKind::Fm => "fm".to_string(),
+            TokenKind::Wavetable => "wavetable".to_string(),
             _ => {
                 return Err(CompileError::parse(
                     format!("expected name, got {:?}", t.kind),

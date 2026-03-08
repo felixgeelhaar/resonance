@@ -158,6 +158,7 @@ mod tests {
                     name: "bass".to_string(),
                     instrument: InstrumentRef::Bass,
                     sections: vec![],
+                    midi_out: None,
                 },
             }],
         }

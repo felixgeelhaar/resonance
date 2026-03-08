@@ -27,6 +27,11 @@ pub enum TokenKind {
     Vel,
     Bars,
     Plugin,
+    Fm,
+    Wavetable,
+    Cycles,
+    Arrangement,
+    MidiOut,
 
     // Literals
     Ident(String),
@@ -62,6 +67,8 @@ pub enum StepToken {
     Rest,   // .
     Accent, // X (uppercase) — high velocity
     Ghost,  // x (lowercase) — low velocity
+    /// Stacked hits: multiple targets at same time (e.g., "kick+hat")
+    Stacked(Vec<String>),
 }
 
 /// A note reference in a pattern.

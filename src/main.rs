@@ -21,6 +21,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use resonance::audio::export::{export_wav, ExportConfig};
 use resonance::audio::AudioEngine;
 use resonance::content::presets;
 use resonance::dsl::Compiler;
@@ -51,6 +52,23 @@ enum Commands {
         #[arg(short, long)]
         duration: Option<f64>,
     },
+    /// Export a .dsl file to WAV
+    Export {
+        /// Path to a .dsl source file
+        file: PathBuf,
+        /// Output WAV path
+        #[arg(short, long, default_value = "output.wav")]
+        output: PathBuf,
+        /// Number of bars to render (default: full song)
+        #[arg(short, long)]
+        bars: Option<u32>,
+        /// Include master effects (reverb/delay)
+        #[arg(long)]
+        effects: bool,
+        /// Sample rate (default: 44100)
+        #[arg(long, default_value = "44100")]
+        sample_rate: u32,
+    },
 }
 
 fn main() -> io::Result<()> {
@@ -58,6 +76,13 @@ fn main() -> io::Result<()> {
 
     match cli.command {
         Some(Commands::Play { file, duration }) => headless_play(&file, duration),
+        Some(Commands::Export {
+            file,
+            output,
+            bars,
+            effects,
+            sample_rate,
+        }) => export_song(&file, &output, bars, effects, sample_rate),
         None => run_tui(),
     }
 }
@@ -219,14 +244,40 @@ fn headless_play(file: &PathBuf, duration: Option<f64>) -> io::Result<()> {
     let seed = 42u64;
     let bpm = song.tempo.clamp(20.0, 999.0);
 
-    // Compute song loop length from sections (round up to bar boundary)
-    let song_length_bars: u32 = song
-        .sections
-        .iter()
-        .map(|s| s.length_in_bars)
-        .sum::<u32>()
+    // Compute song loop length: arrangement total if present, else sections sum
+    let song_length_bars: u32 = if let Some(ref arr) = song.arrangement {
+        let section_bars = |name: &str| -> u32 {
+            song.sections
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| s.length_in_bars)
+                .unwrap_or(4)
+        };
+        let ctrl = resonance::section::ArrangementController::new(arr.entries.clone());
+        ctrl.total_bars(&section_bars)
+    } else {
+        song.sections
+            .iter()
+            .map(|s| s.length_in_bars)
+            .sum::<u32>()
+            .max(1)
+    };
+    // Account for multi-cycle expansion
+    let num_cycles = song
+        .arrangement
+        .is_none()
+        .then(|| {
+            // cycles only applies when no arrangement
+            source.lines().find_map(|l| {
+                let l = l.trim();
+                l.strip_prefix("cycles ")
+                    .and_then(|rest| rest.trim().parse::<u32>().ok())
+            })
+        })
+        .flatten()
+        .unwrap_or(1)
         .max(1);
-    let loop_length = Beat::from_bars(song_length_bars);
+    let loop_length = Beat::from_bars(song_length_bars * num_cycles);
 
     let macro_engine = MacroEngine::from_compiled(&song.macros, &song.mappings);
 
@@ -311,6 +362,47 @@ fn headless_play(file: &PathBuf, duration: Option<f64>) -> io::Result<()> {
     Ok(())
 }
 
+fn export_song(
+    file: &PathBuf,
+    output: &std::path::Path,
+    bars: Option<u32>,
+    effects: bool,
+    sample_rate: u32,
+) -> io::Result<()> {
+    let source = std::fs::read_to_string(file)?;
+    let song = Compiler::compile(&source).map_err(|e| io::Error::other(e.to_string()))?;
+
+    let plugin_registry = resonance::plugin::registry::PluginRegistry::scan_default();
+    let config = ExportConfig {
+        output_path: output.to_path_buf(),
+        bars,
+        include_effects: effects,
+    };
+
+    eprintln!(
+        "Exporting {} to {} ({} bars, effects: {})...",
+        file.display(),
+        output.display(),
+        bars.map(|b| b.to_string())
+            .unwrap_or_else(|| "auto".to_string()),
+        effects,
+    );
+
+    match export_wav(&song, config, 42, sample_rate, &plugin_registry) {
+        Ok(samples) => {
+            let seconds = samples as f64 / (sample_rate as f64 * 2.0);
+            eprintln!(
+                "Exported {:.1}s ({} samples) to {}",
+                seconds,
+                samples,
+                output.display()
+            );
+            Ok(())
+        }
+        Err(e) => Err(io::Error::other(e.to_string())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -343,6 +435,58 @@ mod tests {
                 assert!((duration.unwrap() - 5.0).abs() < f64::EPSILON);
             }
             _ => panic!("expected Play command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_export_subcommand() {
+        let cli =
+            Cli::try_parse_from(["resonance", "export", "test.dsl", "-o", "out.wav"]).unwrap();
+        match cli.command {
+            Some(Commands::Export {
+                file,
+                output,
+                bars,
+                effects,
+                sample_rate,
+            }) => {
+                assert_eq!(file, PathBuf::from("test.dsl"));
+                assert_eq!(output, PathBuf::from("out.wav"));
+                assert!(bars.is_none());
+                assert!(!effects);
+                assert_eq!(sample_rate, 44100);
+            }
+            _ => panic!("expected Export command"),
+        }
+    }
+
+    #[test]
+    fn cli_parse_export_with_options() {
+        let cli = Cli::try_parse_from([
+            "resonance",
+            "export",
+            "test.dsl",
+            "-o",
+            "out.wav",
+            "--bars",
+            "8",
+            "--effects",
+            "--sample-rate",
+            "48000",
+        ])
+        .unwrap();
+        match cli.command {
+            Some(Commands::Export {
+                bars,
+                effects,
+                sample_rate,
+                ..
+            }) => {
+                assert_eq!(bars, Some(8));
+                assert!(effects);
+                assert_eq!(sample_rate, 48000);
+            }
+            _ => panic!("expected Export command"),
         }
     }
 

@@ -3,8 +3,10 @@
 //! Manages the section lifecycle: which section is active, pending transitions
 //! that fire on bar boundaries, and layers that can be toggled on/off.
 
+pub mod arrangement;
 pub mod transition;
 
+pub use arrangement::ArrangementController;
 pub use transition::QuantizedTransitionManager;
 
 use crate::event::beat::{Beat, DEFAULT_BEATS_PER_BAR, TICKS_PER_BEAT};

@@ -32,13 +32,23 @@ pub struct CompiledSong {
     pub mappings: Vec<MappingDef>,
     pub sections: Vec<CompiledSection>,
     pub layers: Vec<LayerDef>,
+    pub arrangement: Option<ArrangementDef>,
 }
 
 /// Compile a Program AST into a CompiledSong.
 pub fn compile_program(program: &Program) -> Result<CompiledSong, CompileError> {
+    let num_cycles = program.cycles.unwrap_or(1).max(1);
     let mut events = Vec::new();
     let mut track_defs = Vec::new();
     let mut sections = Vec::new();
+
+    // Compute single-cycle length for time offsets
+    let single_cycle_bars: u32 = program
+        .tracks
+        .iter()
+        .map(|t| t.sections.iter().map(|s| s.length_bars).sum::<u32>())
+        .max()
+        .unwrap_or(1);
 
     for (idx, track) in program.tracks.iter().enumerate() {
         let track_id = TrackId(idx as u32);
@@ -46,25 +56,34 @@ pub fn compile_program(program: &Program) -> Result<CompiledSong, CompileError> 
 
         let is_drum = matches!(track.instrument, InstrumentRef::Kit(_));
 
-        let mut section_offset = Beat::ZERO;
+        for cycle in 0..num_cycles {
+            let cycle_offset = Beat::from_bars(single_cycle_bars * cycle);
+            let mut section_offset = Beat::ZERO;
 
-        for section in &track.sections {
-            let section_events = compile_section(section, track_id, is_drum, section_offset)?;
-            events.extend(section_events);
+            for section in &track.sections {
+                let section_events = compile_section(
+                    section,
+                    track_id,
+                    is_drum,
+                    cycle_offset + section_offset,
+                    cycle,
+                )?;
+                events.extend(section_events);
 
-            // Collect compiled sections (deduplicate by name)
-            if !sections
-                .iter()
-                .any(|s: &CompiledSection| s.name == section.name)
-            {
-                sections.push(CompiledSection {
-                    name: section.name.clone(),
-                    length_in_bars: section.length_bars,
-                    mapping_overrides: section.overrides.clone(),
-                });
+                // Collect compiled sections (deduplicate by name)
+                if !sections
+                    .iter()
+                    .any(|s: &CompiledSection| s.name == section.name)
+                {
+                    sections.push(CompiledSection {
+                        name: section.name.clone(),
+                        length_in_bars: section.length_bars,
+                        mapping_overrides: section.overrides.clone(),
+                    });
+                }
+
+                section_offset = section_offset + Beat::from_bars(section.length_bars);
             }
-
-            section_offset = section_offset + Beat::from_bars(section.length_bars);
         }
     }
 
@@ -79,6 +98,7 @@ pub fn compile_program(program: &Program) -> Result<CompiledSong, CompileError> 
         mappings: program.mappings.clone(),
         sections,
         layers: program.layers.clone(),
+        arrangement: program.arrangement.clone(),
     })
 }
 
@@ -87,12 +107,19 @@ fn compile_section(
     track_id: TrackId,
     is_drum: bool,
     offset: Beat,
+    cycle_index: u32,
 ) -> Result<Vec<Event>, CompileError> {
     let mut events = Vec::new();
 
     for pattern in &section.patterns {
-        let pattern_events =
-            compile_pattern(pattern, track_id, is_drum, offset, section.length_bars)?;
+        let pattern_events = compile_pattern(
+            pattern,
+            track_id,
+            is_drum,
+            offset,
+            section.length_bars,
+            cycle_index,
+        )?;
         events.extend(pattern_events);
     }
 
@@ -105,6 +132,7 @@ fn compile_pattern(
     is_drum: bool,
     offset: Beat,
     length_bars: u32,
+    cycle_index: u32,
 ) -> Result<Vec<Event>, CompileError> {
     // Apply pre-event transforms (modify steps/velocities before event generation)
     let mut steps = pattern.steps.clone();
@@ -112,7 +140,7 @@ fn compile_pattern(
     let seed = compute_pattern_seed(&pattern.target, &steps);
 
     for transform in &pattern.transforms {
-        apply_step_transform(&mut steps, &mut velocities, transform, seed);
+        apply_step_transform(&mut steps, &mut velocities, transform, seed, cycle_index);
     }
 
     let mut events = Vec::new();
@@ -156,8 +184,8 @@ fn compile_pattern(
                     if options.is_empty() {
                         continue;
                     }
-                    // Pick based on step index (pragmatic single-cycle approach)
-                    let picked = &options[i % options.len()];
+                    // Pick based on cycle index for multi-cycle alternation
+                    let picked = &options[cycle_index as usize % options.len()];
                     match picked {
                         Step::Hit => 0.85,
                         Step::Accent(v) => *v as f32,
@@ -166,6 +194,7 @@ fn compile_pattern(
                     }
                 }
                 Step::Subdivided(_) => 0.85, // handled below
+                Step::Stacked(_) => 0.85,    // handled below
             }
         };
 
@@ -230,7 +259,7 @@ fn compile_pattern(
             }
             Step::Alternate(options) => {
                 if !options.is_empty() {
-                    let picked = &options[i % options.len()];
+                    let picked = &options[cycle_index as usize % options.len()];
                     emit_step_event(
                         &mut events,
                         picked,
@@ -292,6 +321,22 @@ fn compile_pattern(
                             seed,
                             i * 1000 + ri,
                         )?;
+                    }
+                }
+            }
+            Step::Stacked(targets) => {
+                // Emit one event per target at the same time
+                for target_name in targets {
+                    if is_drum {
+                        events.push(Event::sample(
+                            time,
+                            duration,
+                            track_id,
+                            target_name,
+                            velocity,
+                        ));
+                    } else if let Some(midi) = parse_note_name(target_name) {
+                        events.push(Event::note(time, duration, track_id, midi, velocity));
                     }
                 }
             }
@@ -422,6 +467,21 @@ fn emit_step_event(
                 }
             }
         }
+        Step::Stacked(targets) => {
+            for target_name in targets {
+                if is_drum {
+                    events.push(Event::sample(
+                        time,
+                        duration,
+                        track_id,
+                        target_name,
+                        velocity,
+                    ));
+                } else if let Some(midi) = parse_note_name(target_name) {
+                    events.push(Event::note(time, duration, track_id, midi, velocity));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -445,6 +505,7 @@ fn compute_pattern_seed(target: &str, steps: &[Step]) -> u64 {
             Step::Alternate(_) => 5,
             Step::Subdivided(_) => 6,
             Step::Ratchet(_, _) => 7,
+            Step::Stacked(_) => 8,
         };
         hash ^= step_val;
         hash = hash.wrapping_mul(0x0100_0000_01b3);
@@ -458,6 +519,7 @@ fn apply_step_transform(
     velocities: &mut Option<Vec<f64>>,
     transform: &Transform,
     seed: u64,
+    cycle_index: u32,
 ) {
     match transform {
         Transform::Fast(n) => {
@@ -516,18 +578,15 @@ fn apply_step_transform(
             }
         }
         Transform::Every(n, inner) => {
-            // In compile-time expansion, we have one cycle of steps.
-            // `every(N, t)` applies the transform to 1 out of N repetitions.
-            // Since we compile a single cycle, apply if cycle 0 mod N == 0
-            // (first cycle gets the transform).
-            if *n > 0 {
-                apply_step_transform(steps, velocities, inner, seed);
+            // Apply the transform every N cycles based on cycle_index
+            if *n > 0 && cycle_index % *n == 0 {
+                apply_step_transform(steps, velocities, inner, seed, cycle_index);
             }
         }
         Transform::Sometimes(prob, inner) => {
             let mut rng = ChaCha8Rng::seed_from_u64(seed);
             if rng.gen::<f64>() < *prob {
-                apply_step_transform(steps, velocities, inner, seed);
+                apply_step_transform(steps, velocities, inner, seed, cycle_index);
             }
         }
         Transform::Chop(n) => {
@@ -1250,7 +1309,7 @@ track bass {
             velocities: Some(vec![0.9, 0.7]),
             transforms: vec![],
         };
-        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1, 0).unwrap();
         // Step 0: Subdivided with vel 0.9 (> 0 → active), produces 2 sub-events
         // Step 1: Hit with vel 0.7
         assert_eq!(events.len(), 3);
@@ -1273,7 +1332,7 @@ track bass {
             velocities: Some(vec![0.0, 0.8]),
             transforms: vec![],
         };
-        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1, 0).unwrap();
         // Step 0: Subdivided with vel 0.0 → skipped
         // Step 1: Hit with vel 0.8
         assert_eq!(events.len(), 1);
@@ -1290,7 +1349,7 @@ track bass {
             velocities: None,
             transforms: vec![],
         };
-        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1, 0).unwrap();
         assert_eq!(
             events.len(),
             0,
@@ -1307,7 +1366,7 @@ track bass {
             velocities: None,
             transforms: vec![],
         };
-        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1, 0).unwrap();
         // Random(0.0) never fires, Hit fires once
         assert_eq!(
             events.len(),
@@ -1328,7 +1387,7 @@ track bass {
             velocities: None,
             transforms: vec![],
         };
-        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1, 0).unwrap();
         // Sub-step 0: Alternate picks index 0 % 2 = 0 → Hit
         // Sub-step 1: Hit
         assert_eq!(
@@ -1350,7 +1409,7 @@ track bass {
             velocities: None,
             transforms: vec![],
         };
-        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1, 0).unwrap();
         // Sub-step 0: Ratchet expands to 2 hits
         // Sub-step 1: Rest
         assert_eq!(events.len(), 2, "ratchet inside subdivision should expand");
@@ -1368,7 +1427,7 @@ track bass {
             velocities: None,
             transforms: vec![],
         };
-        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1, 0).unwrap();
         // Ratchet repeats 2 times, each time the subdivision produces 1 event (Hit, Rest)
         assert_eq!(
             events.len(),

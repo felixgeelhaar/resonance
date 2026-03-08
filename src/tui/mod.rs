@@ -63,7 +63,7 @@ use crate::instrument::InstrumentRouter;
 use crate::intent::{IntentProcessor, PerformanceIntent, StructuralIntentProcessor};
 use crate::macro_engine::history::MacroHistory;
 use crate::macro_engine::{MacroEngine, Mapping};
-use crate::section::{Section, SectionController};
+use crate::section::{ArrangementController, Section, SectionController};
 
 /// Create a themed block with rounded borders and focus-aware border color.
 fn themed_block<'a>(title: &'a str, focused: bool, theme: &'a Theme) -> Block<'a> {
@@ -116,6 +116,7 @@ pub struct App {
     pub dsl_reference: DslReference,
     pub settings_panel: SettingsPanel,
     pub structural_intent_processor: StructuralIntentProcessor,
+    pub arrangement_controller: Option<ArrangementController>,
     #[cfg(feature = "llm")]
     llm_client: Option<crate::ai::llm::LlmClient>,
     external_rx: external_input::ExternalInputReceiver,
@@ -183,6 +184,7 @@ impl App {
             dsl_reference: DslReference::default(),
             settings_panel: SettingsPanel::new(),
             structural_intent_processor: StructuralIntentProcessor::new(),
+            arrangement_controller: None,
             #[cfg(feature = "llm")]
             llm_client: crate::ai::config::load_config()
                 .and_then(|c| crate::ai::llm::LlmClient::from_config(&c)),
@@ -705,6 +707,14 @@ impl App {
                 }
                 self.update_layer_panel();
 
+                // Build arrangement controller if the song defines one
+                if let Some(ref arr_def) = song.arrangement {
+                    let ctrl = ArrangementController::new(arr_def.entries.clone());
+                    self.arrangement_controller = Some(ctrl);
+                } else {
+                    self.arrangement_controller = None;
+                }
+
                 // Store compiled events for grid visualization
                 self.compiled_events = song.events.clone();
 
@@ -981,6 +991,105 @@ impl App {
                             format!("theme not found: {name}"),
                             self.current_beat.as_beats_f64(),
                         );
+                    }
+                }
+                "midi_out" | "midiout" => {
+                    let devices = crate::midi::MidiOutput::list_devices();
+                    if devices.is_empty() {
+                        self.intent_console.log(
+                            "no MIDI output devices found",
+                            self.current_beat.as_beats_f64(),
+                        );
+                    } else {
+                        for d in &devices {
+                            self.intent_console
+                                .log(format!("midi out: {d}"), self.current_beat.as_beats_f64());
+                        }
+                    }
+                }
+                "arrangement" | "arr" => {
+                    if let Some(ref ctrl) = self.arrangement_controller {
+                        self.intent_console
+                            .log(ctrl.status_string(), self.current_beat.as_beats_f64());
+                    } else {
+                        self.intent_console
+                            .log("no arrangement defined", self.current_beat.as_beats_f64());
+                    }
+                }
+                _ if cmd.starts_with("arrangement ") || cmd.starts_with("arr ") => {
+                    let arg = cmd
+                        .strip_prefix("arrangement ")
+                        .or_else(|| cmd.strip_prefix("arr "))
+                        .unwrap()
+                        .trim();
+                    match arg {
+                        "on" => {
+                            if let Some(ref mut ctrl) = self.arrangement_controller {
+                                ctrl.set_active(true);
+                                self.intent_console
+                                    .log("arrangement: on", self.current_beat.as_beats_f64());
+                            }
+                        }
+                        "off" => {
+                            if let Some(ref mut ctrl) = self.arrangement_controller {
+                                ctrl.set_active(false);
+                                self.intent_console
+                                    .log("arrangement: off", self.current_beat.as_beats_f64());
+                            }
+                        }
+                        "reset" => {
+                            if let Some(ref mut ctrl) = self.arrangement_controller {
+                                ctrl.reset();
+                                self.intent_console
+                                    .log("arrangement: reset", self.current_beat.as_beats_f64());
+                            }
+                        }
+                        _ => {
+                            self.intent_console.log(
+                                "usage: :arrangement on|off|reset",
+                                self.current_beat.as_beats_f64(),
+                            );
+                        }
+                    }
+                }
+                _ if cmd.starts_with("export") => {
+                    let parts: Vec<&str> = cmd.split_whitespace().collect();
+                    let path = parts.get(1).unwrap_or(&"output.wav");
+                    let bars = parts.get(2).and_then(|s| s.parse::<u32>().ok());
+
+                    let source = self.editor.content();
+                    match Compiler::compile(&source) {
+                        Ok(song) => {
+                            let registry = &self.plugin_registry;
+                            let config = crate::audio::export::ExportConfig {
+                                output_path: std::path::PathBuf::from(path),
+                                bars,
+                                include_effects: true,
+                            };
+                            match crate::audio::export::export_wav(
+                                &song, config, 42, 44100, registry,
+                            ) {
+                                Ok(samples) => {
+                                    let seconds = samples as f64 / (44100.0 * 2.0);
+                                    self.intent_console.log(
+                                        format!("exported {:.1}s to {path}", seconds),
+                                        self.current_beat.as_beats_f64(),
+                                    );
+                                }
+                                Err(e) => {
+                                    self.intent_console.log(
+                                        format!("export error: {e}"),
+                                        self.current_beat.as_beats_f64(),
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self.intent_console.log(
+                                format!("compile error: {e}"),
+                                self.current_beat.as_beats_f64(),
+                            );
+                        }
                     }
                 }
                 _ if cmd.starts_with("save ") => {
@@ -1379,6 +1488,7 @@ impl App {
                             }
                         }
                         GridCell::Note(_) => ("\u{25CF}", tc), // ● filled circle
+                        GridCell::Stacked(_) => ("#", theme.grid_hit_bright), // # stacked hits
                         GridCell::Cursor => ("\u{2503}", theme.grid_playhead), // ┃ bold vert
                     };
                     spans.push(Span::styled(text, Style::default().fg(color)));
@@ -1785,6 +1895,15 @@ impl App {
             Span::raw("")
         };
 
+        // Arrangement status (compact)
+        let arrangement_indicator = match &self.arrangement_controller {
+            Some(ctrl) if ctrl.is_active() => Span::styled(
+                format!(" {} ", ctrl.status_string()),
+                Style::default().fg(theme.title),
+            ),
+            _ => Span::raw(""),
+        };
+
         let mut spans = vec![
             Span::raw(" "),
             beat_pulse,
@@ -1806,6 +1925,7 @@ impl App {
                 self.grid_zoom.label(),
             )),
             compile_indicator,
+            arrangement_indicator,
         ];
         spans.extend(vu_meter);
         spans.extend([
@@ -2612,5 +2732,53 @@ mod tests {
         let check_time = app.last_device_check;
         app.check_audio_device();
         assert_eq!(app.last_device_check, check_time);
+    }
+
+    // --- Arrangement controller tests ---
+
+    #[test]
+    fn no_arrangement_by_default() {
+        let mut app = App::new("tempo 120\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}");
+        app.handle_action(Action::CompileReload);
+        assert!(app.arrangement_controller.is_none());
+    }
+
+    #[test]
+    fn arrangement_command_no_arrangement() {
+        let mut app = App::new("");
+        app.process_command(":arrangement");
+        assert!(app
+            .intent_console
+            .entries()
+            .iter()
+            .any(|e| e.message.contains("no arrangement")));
+    }
+
+    // --- Export command tests ---
+
+    #[test]
+    fn export_command_compile_error() {
+        let mut app = App::new("invalid {{{");
+        app.process_command(":export /tmp/test.wav");
+        assert!(app
+            .intent_console
+            .entries()
+            .iter()
+            .any(|e| e.message.contains("compile error")));
+    }
+
+    #[test]
+    fn export_command_valid_source() {
+        let src = "tempo 120\ntrack drums {\n  kit: default\n  section main [1 bars] {\n    kick: [X . . .]\n  }\n}";
+        let mut app = App::new(src);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_export.wav");
+        app.process_command(&format!(":export {} 1", path.display()));
+        assert!(app
+            .intent_console
+            .entries()
+            .iter()
+            .any(|e| e.message.contains("exported")));
+        assert!(path.exists());
     }
 }

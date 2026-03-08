@@ -12,6 +12,7 @@ pub struct Timeline {
     events: Vec<Event>,
     cursor: usize,
     dirty: bool,
+    loop_point: Option<Beat>,
 }
 
 impl Timeline {
@@ -21,6 +22,7 @@ impl Timeline {
             events: Vec::new(),
             cursor: 0,
             dirty: false,
+            loop_point: None,
         }
     }
 
@@ -86,11 +88,28 @@ impl Timeline {
         self.events.len().saturating_sub(self.cursor)
     }
 
+    /// Set a loop point — when `drain_range` reaches this beat, the cursor
+    /// resets to the beginning so events repeat.
+    pub fn set_loop_point(&mut self, beat: Beat) {
+        self.loop_point = Some(beat);
+    }
+
+    /// Clear the loop point.
+    pub fn clear_loop_point(&mut self) {
+        self.loop_point = None;
+    }
+
+    /// Get the current loop point, if any.
+    pub fn loop_point(&self) -> Option<Beat> {
+        self.loop_point
+    }
+
     /// Remove all events and reset the cursor.
     pub fn clear(&mut self) {
         self.events.clear();
         self.cursor = 0;
         self.dirty = false;
+        self.loop_point = None;
     }
 
     /// Sort events if a batch insert marked the timeline as dirty.
@@ -258,5 +277,23 @@ mod tests {
         assert_eq!(tl.len(), 0);
         assert_eq!(tl.remaining(), 0);
         assert!(tl.peek_next().is_none());
+    }
+
+    #[test]
+    fn loop_point_set_and_clear() {
+        let mut tl = Timeline::new();
+        assert!(tl.loop_point().is_none());
+        tl.set_loop_point(Beat::from_bars(4));
+        assert_eq!(tl.loop_point(), Some(Beat::from_bars(4)));
+        tl.clear_loop_point();
+        assert!(tl.loop_point().is_none());
+    }
+
+    #[test]
+    fn clear_also_clears_loop_point() {
+        let mut tl = Timeline::new();
+        tl.set_loop_point(Beat::from_bars(2));
+        tl.clear();
+        assert!(tl.loop_point().is_none());
     }
 }
