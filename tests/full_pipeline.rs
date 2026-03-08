@@ -557,6 +557,24 @@ drums = kit("default") |> kick.pattern("E(3,8)").fast(2)"#;
 }
 
 #[test]
+fn nested_notation_produces_audio() {
+    // Ratchet inside subdivision: {X^2 .} — should produce 2 rapid hits
+    let src = r#"tempo 128
+drums = kit("default") |> kick.pattern("{X^2.}...")"#;
+
+    let (mut scheduler, mut render_fn) = build_pipeline(src);
+    let blocks = render_blocks(&mut scheduler, &mut render_fn, 50);
+
+    let has_sound = blocks
+        .iter()
+        .any(|block| block.iter().any(|&s| s.abs() > 0.001));
+    assert!(
+        has_sound,
+        "nested notation {{X^2.}} should produce audible audio through full pipeline"
+    );
+}
+
+#[test]
 fn mini_notation_matches_expanded_pattern() {
     // [X.]*2 should expand to X.X. — identical to writing "X.X." directly
     let src_mini = r#"tempo 128

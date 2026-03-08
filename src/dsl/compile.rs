@@ -184,6 +184,8 @@ fn compile_pattern(
                     is_drum,
                     &pattern.target,
                     velocity,
+                    seed,
+                    i,
                 )?;
             }
             Step::Accent(v) => {
@@ -201,6 +203,8 @@ fn compile_pattern(
                     is_drum,
                     &pattern.target,
                     vel,
+                    seed,
+                    i,
                 )?;
             }
             Step::Note(name) => {
@@ -220,6 +224,8 @@ fn compile_pattern(
                     is_drum,
                     &pattern.target,
                     velocity,
+                    seed,
+                    i,
                 )?;
             }
             Step::Alternate(options) => {
@@ -234,6 +240,8 @@ fn compile_pattern(
                         is_drum,
                         &pattern.target,
                         velocity,
+                        seed,
+                        i,
                     )?;
                 }
             }
@@ -245,7 +253,7 @@ fn compile_pattern(
                     for (si, sub_step) in inner.iter().enumerate() {
                         let sub_time = time + Beat::from_beats_f64(si as f64 * sub_dur_beats);
                         let sub_vel = match sub_step {
-                            Step::Hit => 0.85,
+                            Step::Hit | Step::Random(_) => 0.85,
                             Step::Accent(v) => *v as f32,
                             Step::Rest => continue,
                             _ => 0.8,
@@ -259,6 +267,8 @@ fn compile_pattern(
                             is_drum,
                             &pattern.target,
                             sub_vel,
+                            seed,
+                            i * 1000 + si,
                         )?;
                     }
                 }
@@ -279,6 +289,8 @@ fn compile_pattern(
                             is_drum,
                             &pattern.target,
                             velocity,
+                            seed,
+                            i * 1000 + ri,
                         )?;
                     }
                 }
@@ -295,7 +307,7 @@ fn compile_pattern(
     Ok(events)
 }
 
-/// Emit an event for a single step (Hit, Accent, Note). Used by subdivision/ratchet.
+/// Emit an event for a single step, recursing into nested structures.
 #[allow(clippy::too_many_arguments)]
 fn emit_step_event(
     events: &mut Vec<Event>,
@@ -306,9 +318,11 @@ fn emit_step_event(
     is_drum: bool,
     target: &str,
     velocity: f32,
+    seed: u64,
+    step_index: usize,
 ) -> Result<(), CompileError> {
     match step {
-        Step::Hit | Step::Random(_) => {
+        Step::Hit => {
             if is_drum {
                 events.push(Event::sample(time, duration, track_id, target, velocity));
             } else if let Some(midi) = parse_note_name(target) {
@@ -329,8 +343,85 @@ fn emit_step_event(
             events.push(Event::note(time, duration, track_id, midi, velocity));
         }
         Step::Rest => {}
-        // Nested subdivisions/ratchets/alternation not handled recursively to keep it simple
-        _ => {}
+        Step::Random(prob) => {
+            let step_seed = seed.wrapping_add(step_index as u64);
+            let mut rng = ChaCha8Rng::seed_from_u64(step_seed);
+            if rng.gen::<f64>() < *prob {
+                if is_drum {
+                    events.push(Event::sample(time, duration, track_id, target, velocity));
+                } else if let Some(midi) = parse_note_name(target) {
+                    events.push(Event::note(time, duration, track_id, midi, velocity));
+                }
+            }
+        }
+        Step::Alternate(options) => {
+            if !options.is_empty() {
+                let picked = &options[step_index % options.len()];
+                let vel = match picked {
+                    Step::Hit | Step::Random(_) => velocity,
+                    Step::Accent(v) => *v as f32,
+                    Step::Rest => return Ok(()),
+                    _ => velocity,
+                };
+                emit_step_event(
+                    events, picked, time, duration, track_id, is_drum, target, vel, seed,
+                    step_index,
+                )?;
+            }
+        }
+        Step::Subdivided(inner) => {
+            if !inner.is_empty() {
+                let dur_ticks = duration.ticks();
+                let sub_dur_ticks = dur_ticks / inner.len() as u64;
+                let sub_duration = Beat::from_ticks(sub_dur_ticks);
+                for (si, sub_step) in inner.iter().enumerate() {
+                    let sub_time = time + Beat::from_ticks(si as u64 * sub_dur_ticks);
+                    let sub_vel = match sub_step {
+                        Step::Hit | Step::Random(_) => 0.85,
+                        Step::Accent(v) => *v as f32,
+                        Step::Rest => continue,
+                        _ => 0.8,
+                    };
+                    let sub_idx = step_index.wrapping_mul(inner.len()).wrapping_add(si);
+                    emit_step_event(
+                        events,
+                        sub_step,
+                        sub_time,
+                        sub_duration,
+                        track_id,
+                        is_drum,
+                        target,
+                        sub_vel,
+                        seed,
+                        sub_idx,
+                    )?;
+                }
+            }
+        }
+        Step::Ratchet(inner_step, count) => {
+            let count = *count as usize;
+            if count > 0 {
+                let dur_ticks = duration.ticks();
+                let sub_dur_ticks = dur_ticks / count as u64;
+                let sub_duration = Beat::from_ticks(sub_dur_ticks);
+                for ri in 0..count {
+                    let sub_time = time + Beat::from_ticks(ri as u64 * sub_dur_ticks);
+                    let sub_idx = step_index.wrapping_mul(count).wrapping_add(ri);
+                    emit_step_event(
+                        events,
+                        inner_step,
+                        sub_time,
+                        sub_duration,
+                        track_id,
+                        is_drum,
+                        target,
+                        velocity,
+                        seed,
+                        sub_idx,
+                    )?;
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -1186,5 +1277,103 @@ track bass {
         // Step 0: Subdivided with vel 0.0 → skipped
         // Step 1: Hit with vel 0.8
         assert_eq!(events.len(), 1);
+    }
+
+    // --- Recursive nesting tests (Gap 4 & 5) ---
+
+    #[test]
+    fn compile_random_inside_ratchet_respects_probability() {
+        // ?0.0^3 — Random(0.0) ratcheted 3 times. prob=0 → all 3 should be silent.
+        let pattern = PatternDef {
+            target: "kick".to_string(),
+            steps: vec![Step::Ratchet(Box::new(Step::Random(0.0)), 3)],
+            velocities: None,
+            transforms: vec![],
+        };
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        assert_eq!(
+            events.len(),
+            0,
+            "Random(0.0) inside ratchet should produce 0 events"
+        );
+    }
+
+    #[test]
+    fn compile_random_inside_subdivision_respects_probability() {
+        // {?0.0 X} — subdivision with Random(0.0) and Hit
+        let pattern = PatternDef {
+            target: "kick".to_string(),
+            steps: vec![Step::Subdivided(vec![Step::Random(0.0), Step::Hit])],
+            velocities: None,
+            transforms: vec![],
+        };
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        // Random(0.0) never fires, Hit fires once
+        assert_eq!(
+            events.len(),
+            1,
+            "only the Hit sub-step should produce an event"
+        );
+    }
+
+    #[test]
+    fn compile_alternate_inside_subdivision() {
+        // {<X .> X} — subdivision with Alternate([Hit, Rest]) and Hit
+        let pattern = PatternDef {
+            target: "kick".to_string(),
+            steps: vec![Step::Subdivided(vec![
+                Step::Alternate(vec![Step::Hit, Step::Rest]),
+                Step::Hit,
+            ])],
+            velocities: None,
+            transforms: vec![],
+        };
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        // Sub-step 0: Alternate picks index 0 % 2 = 0 → Hit
+        // Sub-step 1: Hit
+        assert_eq!(
+            events.len(),
+            2,
+            "alternate inside subdivision should produce events"
+        );
+    }
+
+    #[test]
+    fn compile_ratchet_inside_subdivision() {
+        // {X^2 .} — subdivision with Ratchet(Hit,2) and Rest
+        let pattern = PatternDef {
+            target: "kick".to_string(),
+            steps: vec![Step::Subdivided(vec![
+                Step::Ratchet(Box::new(Step::Hit), 2),
+                Step::Rest,
+            ])],
+            velocities: None,
+            transforms: vec![],
+        };
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        // Sub-step 0: Ratchet expands to 2 hits
+        // Sub-step 1: Rest
+        assert_eq!(events.len(), 2, "ratchet inside subdivision should expand");
+    }
+
+    #[test]
+    fn compile_subdivided_inside_ratchet() {
+        // Subdivided({X .})^2 — ratchet with a subdivision as inner step
+        let pattern = PatternDef {
+            target: "kick".to_string(),
+            steps: vec![Step::Ratchet(
+                Box::new(Step::Subdivided(vec![Step::Hit, Step::Rest])),
+                2,
+            )],
+            velocities: None,
+            transforms: vec![],
+        };
+        let events = compile_pattern(&pattern, TrackId(0), true, Beat::ZERO, 1).unwrap();
+        // Ratchet repeats 2 times, each time the subdivision produces 1 event (Hit, Rest)
+        assert_eq!(
+            events.len(),
+            2,
+            "subdivided inside ratchet should work recursively"
+        );
     }
 }
