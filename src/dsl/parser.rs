@@ -1183,6 +1183,7 @@ fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
                         "X" => Step::Hit,
                         "x" => Step::Accent(0.5),
                         "." => Step::Rest,
+                        t if is_note_at(t.as_bytes(), 0) => Step::Note(t.to_string()),
                         _ => Step::Rest,
                     })
                     .collect();
@@ -1224,7 +1225,32 @@ fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
                     steps.push(Step::Subdivided(inner_steps));
                 }
             }
-            b'X' | b'x' | b'.' => {
+            b'A'..=b'G' if is_note_at(bytes, i) => {
+                // Note name: A-G, optional #/b, then digit(s)
+                let start = i;
+                i += 1; // skip letter
+                if i < bytes.len() && (bytes[i] == b'#' || bytes[i] == b'b') {
+                    i += 1; // skip accidental
+                }
+                while i < bytes.len() && bytes[i].is_ascii_digit() {
+                    i += 1; // skip octave digits
+                }
+                let note_str = &s[start..i];
+                let step = Step::Note(note_str.to_string());
+
+                // Check for ^N ratchet suffix
+                if i < bytes.len() && bytes[i] == b'^' {
+                    i += 1;
+                    let count = parse_int_at(bytes, &mut i).max(1);
+                    steps.push(Step::Ratchet(Box::new(step), count as u32));
+                } else {
+                    let repeat = parse_repeat_suffix(bytes, &mut i, b'!');
+                    for _ in 0..repeat {
+                        steps.push(step.clone());
+                    }
+                }
+            }
+        b'X' | b'x' | b'.' => {
                 let step = match bytes[i] {
                     b'X' => Step::Hit,
                     b'x' => Step::Accent(0.5),
@@ -1356,6 +1382,18 @@ fn parse_repeat_suffix(bytes: &[u8], i: &mut usize, marker: u8) -> usize {
     } else {
         1
     }
+}
+
+/// Check if bytes at position `i` form a note name (A-G, optional #/b, then digit).
+fn is_note_at(bytes: &[u8], i: usize) -> bool {
+    if i >= bytes.len() || !matches!(bytes[i], b'A'..=b'G') {
+        return false;
+    }
+    let mut j = i + 1;
+    if j < bytes.len() && (bytes[j] == b'#' || bytes[j] == b'b') {
+        j += 1;
+    }
+    j < bytes.len() && bytes[j].is_ascii_digit()
 }
 
 #[cfg(test)]
