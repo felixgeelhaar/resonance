@@ -25,12 +25,8 @@ fn event_count(src: &str) -> usize {
 fn produces_audio(src: &str) -> bool {
     let song = compile(src);
     let registry = resonance::plugin::registry::PluginRegistry::default();
-    let router = InstrumentRouter::from_track_defs_with_kits(
-        &song.track_defs,
-        SAMPLE_RATE,
-        SEED,
-        &registry,
-    );
+    let router =
+        InstrumentRouter::from_track_defs_with_kits(&song.track_defs, SAMPLE_RATE, SEED, &registry);
     let mut render_fn = router.into_render_fn();
     let mut scheduler = EventScheduler::new(song.tempo, SAMPLE_RATE, CHANNELS, BLOCK_SIZE, SEED);
     scheduler.timeline_mut().insert_batch(song.events);
@@ -895,7 +891,8 @@ track drums {
         bars: Some(1),
         include_effects: false,
     };
-    let count = resonance::audio::export::export_wav(&song, config, SEED, SAMPLE_RATE, &registry).unwrap();
+    let count =
+        resonance::audio::export::export_wav(&song, config, SEED, SAMPLE_RATE, &registry).unwrap();
     assert!(count > 0);
     assert!(path.exists());
 }
@@ -913,7 +910,8 @@ drums = kit("default") |> kick.pattern("X . X .")"#;
         bars: Some(1),
         include_effects: false,
     };
-    let count = resonance::audio::export::export_wav(&song, config, SEED, SAMPLE_RATE, &registry).unwrap();
+    let count =
+        resonance::audio::export::export_wav(&song, config, SEED, SAMPLE_RATE, &registry).unwrap();
     assert!(count > 0);
     assert!(path.exists());
 }

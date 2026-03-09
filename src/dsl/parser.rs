@@ -1250,7 +1250,7 @@ fn parse_mini_notation(s: &str) -> Result<Vec<Step>, CompileError> {
                     }
                 }
             }
-        b'X' | b'x' | b'.' => {
+            b'X' | b'x' | b'.' => {
                 let step = match bytes[i] {
                     b'X' => Step::Hit,
                     b'x' => Step::Accent(0.5),

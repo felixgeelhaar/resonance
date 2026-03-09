@@ -38,6 +38,9 @@ use resonance::tui::App;
     about = "Terminal-native live coding music instrument"
 )]
 struct Cli {
+    /// Open a .dsl file in the TUI
+    file: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -83,13 +86,23 @@ fn main() -> io::Result<()> {
             effects,
             sample_rate,
         }) => export_song(&file, &output, bars, effects, sample_rate),
-        None => run_tui(),
+        None => run_tui(cli.file.as_deref()),
     }
 }
 
-fn run_tui() -> io::Result<()> {
+fn run_tui(file: Option<&std::path::Path>) -> io::Result<()> {
+    // Load file content early (before terminal setup) so errors print normally
+    let file_content = if let Some(path) = file {
+        Some(
+            std::fs::read_to_string(path)
+                .map_err(|e| io::Error::other(format!("could not read {}: {e}", path.display())))?,
+        )
+    } else {
+        None
+    };
+
     // Create config directory on first run
-    let is_first = first_run::is_first_run();
+    let is_first = file_content.is_none() && first_run::is_first_run();
     if is_first {
         if let Err(e) = first_run::create_config_dir() {
             eprintln!("warning: could not create config dir: {e}");
@@ -103,8 +116,10 @@ fn run_tui() -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // On first run, show genre selection wizard
-    let initial_source = if is_first {
+    // Determine initial source
+    let initial_source = if let Some(content) = file_content {
+        content
+    } else if is_first {
         let selected = run_first_run_wizard(&mut terminal)?;
         presets::load_preset(&selected).unwrap_or_else(presets::default_preset)
     } else {
@@ -488,6 +503,20 @@ mod tests {
             }
             _ => panic!("expected Export command"),
         }
+    }
+
+    #[test]
+    fn cli_parse_file_arg() {
+        let cli = Cli::try_parse_from(["resonance", "song.dsl"]).unwrap();
+        assert_eq!(cli.file, Some(PathBuf::from("song.dsl")));
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn cli_parse_no_args_no_file() {
+        let cli = Cli::try_parse_from(["resonance"]).unwrap();
+        assert!(cli.file.is_none());
+        assert!(cli.command.is_none());
     }
 
     #[test]
