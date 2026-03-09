@@ -21,11 +21,8 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: resonance-linux-amd64
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            artifact: resonance-linux-arm64
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
             artifact: resonance-macos-amd64
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -39,14 +36,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev
-
-      - name: Install cross-compilation tools (Linux ARM64)
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
-          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
-          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
 
       - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
         with:
@@ -109,12 +98,6 @@ jobs:
           name: resonance-macos-arm64
           path: artifacts
 
-      - name: Download macOS AMD64 artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: resonance-macos-amd64
-          path: artifacts
-
       - name: Download Linux AMD64 artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -125,7 +108,6 @@ jobs:
         id: checksums
         run: |
           echo "macos_arm64_sha=$(cat artifacts/resonance-macos-arm64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
-          echo "macos_amd64_sha=$(cat artifacts/resonance-macos-amd64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
           echo "linux_amd64_sha=$(cat artifacts/resonance-linux-amd64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
 
       - name: Update Homebrew tap
@@ -135,21 +117,19 @@ jobs:
           VERSION="${{ github.ref_name }}"
           VERSION="${VERSION#v}"
 
-          cat > formula.rb << FORMULA
+          cat > formula.rb <<'FORMULA'
           class Resonance < Formula
             desc "Terminal-native live coding music instrument"
             homepage "https://github.com/felixgeelhaar/resonance"
-            version "${VERSION}"
             license "MIT"
+          FORMULA
+
+          cat >> formula.rb << FORMULA
+            version "${VERSION}"
 
             on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/felixgeelhaar/resonance/releases/download/${{ github.ref_name }}/resonance-macos-arm64.tar.gz"
-                sha256 "${{ steps.checksums.outputs.macos_arm64_sha }}"
-              else
-                url "https://github.com/felixgeelhaar/resonance/releases/download/${{ github.ref_name }}/resonance-macos-amd64.tar.gz"
-                sha256 "${{ steps.checksums.outputs.macos_amd64_sha }}"
-              end
+              url "https://github.com/felixgeelhaar/resonance/releases/download/${{ github.ref_name }}/resonance-macos-arm64.tar.gz"
+              sha256 "${{ steps.checksums.outputs.macos_arm64_sha }}"
             end
 
             on_linux do
