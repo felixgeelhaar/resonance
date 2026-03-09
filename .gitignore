@@ -4,3 +4,6 @@
 *.swo
 .DS_Store
 coverage.*
+.claude/
+.coverctl.yaml
+.relicta/
