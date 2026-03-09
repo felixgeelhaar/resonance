@@ -35,7 +35,8 @@ use resonance::tui::App;
 #[derive(Parser)]
 #[command(
     name = "resonance",
-    about = "Terminal-native live coding music instrument"
+    about = "Terminal-native live coding music instrument",
+    version
 )]
 struct Cli {
     /// Open a .dsl file in the TUI
