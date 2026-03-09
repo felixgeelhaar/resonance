@@ -1093,7 +1093,7 @@ track drums {
 
     #[test]
     fn compile_transform_add_transposes() {
-        let src = r#"lead = bass() |> note.pattern("X.X.").add(7)"#;
+        let _src = r#"lead = bass() |> note.pattern("X.X.").add(7)"#;
         // "note" as target won't parse as a note name, so hits produce no events
         // Use a proper note pattern instead
         let src2 = r#"

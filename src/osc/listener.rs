@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn send_and_receive_osc() {
-        use rosc::{encoder, OscMessage, OscPacket, OscType};
+        use rosc::{encoder, OscMessage, OscPacket};
         use std::net::UdpSocket;
 
         let config = OscConfig {
