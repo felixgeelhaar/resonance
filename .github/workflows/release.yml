@@ -21,9 +21,6 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             artifact: resonance-linux-amd64
-          - target: x86_64-apple-darwin
-            os: macos-13
-            artifact: resonance-macos-amd64
           - target: aarch64-apple-darwin
             os: macos-latest
             artifact: resonance-macos-arm64
