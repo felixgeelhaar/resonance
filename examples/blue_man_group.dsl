@@ -1,33 +1,38 @@
-tempo 110
+tempo 140
 
-arrangement [intro x2, groove_a x2, groove_b x2, build x1, peak x2, groove_a x1, ending x1]
+arrangement [intro x2, groove x2, riff_a x2, accent x1, riff_b x2, peak x2, riff_a x1, ending x1]
 
 track drums {
     kit: default
     section intro [2 bars] {
-        kick:  [X . . . . . X . X . . . . . X .]
+        kick:  [X . . . X . . . X . . . X . . .]
         snare: [. . . . X . . . . . . . X . . .]
     }
-    section groove_a [2 bars] {
+    section groove [2 bars] {
         kick:  [X . . X . . X . X . . X . . X .]
         snare: [. . . . X . . . . . . . X . . .]
-        hat:   [. . X . . . X . . . X . . . X .]
-    }
-    section groove_b [2 bars] {
-        kick:  [X . X . . X X . X . X . . X X .]
-        snare: [. . . . X . . . . . . . X . . .]
         hat:   [X . X . X . X . X . X . X . X .]
-        clap:  [. . . . . . . . . . . . X . . .]
     }
-    section build [2 bars] {
-        kick:  [X . X . X . X . X . X . X . X .]
-        snare: [. . . . X . . . . . X . X . X .]
-        hat:   [X X X X X X X X X X X X X X X X]
-    }
-    section peak [2 bars] {
-        kick:  [X . X . . X X . X . X . . X X .]
+    section riff_a [2 bars] {
+        kick:  [X . . X . . X . X . . X . . X .]
         snare: [. . . . X . . X . . . . X . . X]
         hat:   [X . X . X . X . X . X . X . X .]
+        clap:  [. . . . X . . . . . . . X . . .]
+    }
+    section accent [2 bars] {
+        kick:  [X X X . X X X . X X . . . . . .]
+        snare: [X X X . X X X . X X . . . . . .]
+        clap:  [X X X . X X X . X X . . . . . .]
+    }
+    section riff_b [2 bars] {
+        kick:  [X . X . X . X . X . X . X . X .]
+        snare: [. . . . X . . . . . . . X . . .]
+        hat:   [X . X . X . X . X . X . X . X .]
+    }
+    section peak [2 bars] {
+        kick:  [X . . X . . X . X . . X . . X .]
+        snare: [. . . . X . . X . . . . X . . X]
+        hat:   [X X X X X X X X X X X X X X X X]
         clap:  [. . . . X . . . . . . . X . . .]
     }
     section ending [2 bars] {
@@ -36,90 +41,102 @@ track drums {
     }
 }
 
-track pipes_low {
-    fm
+track bass {
+    bass
     section intro [2 bars] {
-        hit: [E2 . . . E2 . . . D2 . . . D2 . . .]
+        line: [E2 E2 E2 E2 E2 E2 E2 E2 E2 E2 E2 E2 E2 E2 E2 E2]
     }
-    section groove_a [2 bars] {
-        hit: [E2 . E2 . . . E2 . D2 . D2 . . . D2 .]
+    section groove [2 bars] {
+        line: [E2 E2 E2 E2 E2 E2 E2 E2 C#2 C#2 C#2 C#2 C#2 C#2 C#2 C#2]
     }
-    section groove_b [2 bars] {
-        hit: [E2 E2 . E2 . . E2 . D2 D2 . D2 . . D2 .]
+    section riff_a [2 bars] {
+        line: [G#1 G#1 F#1 F#1 G#1 G#1 F#1 F#1 G#1 G#1 F#1 F#1 E1 E1 F#1 F#1]
     }
-    section build [2 bars] {
-        hit: [E2 . E2 . E2 . E2 . D2 . D2 . D2 . D2 .]
+    section accent [2 bars] {
+        line: [G#1 G#1 G#1 . G#1 G#1 G#1 . G#1 G#1 . . . . . .]
+    }
+    section riff_b [2 bars] {
+        line: [G#1 . F#1 . E1 . F#1 . G#1 . F#1 . E1 . F#1 .]
     }
     section peak [2 bars] {
-        hit: [E2 E2 . E2 . E2 E2 . D2 D2 . D2 . D2 D2 .]
+        line: [G#1 G#1 F#1 F#1 G#1 G#1 F#1 F#1 G#1 G#1 F#1 F#1 E1 E1 F#1 F#1]
     }
     section ending [2 bars] {
-        hit: [E2 . . . E2 . . . . . . . . . . .]
+        line: [G#1 . . . G#1 . . . . . . . . . . .]
     }
 }
 
-track pipes_mid {
+track riff {
     fm
     section intro [2 bars] {
         hit: [. . . . . . . . . . . . . . . .]
     }
-    section groove_a [2 bars] {
-        hit: [. . E3 . . . . . . . D3 . . . . .]
+    section groove [2 bars] {
+        hit: [. . . . . . . . . . . . . . . .]
     }
-    section groove_b [2 bars] {
-        hit: [E3 . . E3 . . . . D3 . . D3 . . . .]
+    section riff_a [2 bars] {
+        hit: [G#3 G#3 . F#3 F#3 F#3 F#3 . G#3 G#3 . F#3 F#3 F#3 F#3 . ]
     }
-    section build [2 bars] {
-        hit: [E3 . E3 . . . E3 . D3 . D3 . . . D3 .]
+    section accent [2 bars] {
+        hit: [G#3 G#3 G#3 . G#3 G#3 G#3 . G#3 G#3 . . . . . .]
+    }
+    section riff_b [2 bars] {
+        hit: [G#3 . F#3 . E3 . F#3 . G#3 . F#3 . E3 . F#3 .]
     }
     section peak [2 bars] {
-        hit: [E3 . E3 . G3 . E3 . D3 . D3 . F3 . D3 .]
+        hit: [G#3 G#3 . F#3 F#3 F#3 F#3 . G#3 G#3 . F#3 F#3 F#3 F#3 .]
     }
     section ending [2 bars] {
-        hit: [E3 . . . . . . . . . . . . . . .]
+        hit: [G#3 . . . . . . . . . . . . . . .]
     }
 }
 
-track pipes_high {
+track power {
+    poly
+    section intro [2 bars] {
+        chord: [. . . . . . . . . . . . . . . .]
+    }
+    section groove [2 bars] {
+        chord: [. . . . . . . . . . . . . . . .]
+    }
+    section riff_a [2 bars] {
+        chord: [G#3 . . . F#3 . . . G#3 . . . E3 . F#3 .]
+    }
+    section accent [2 bars] {
+        chord: [G#3 G#3 G#3 . G#3 G#3 G#3 . G#3 G#3 . . . . . .]
+    }
+    section riff_b [2 bars] {
+        chord: [G#3 . F#3 . E3 . F#3 . G#3 . F#3 . E3 . F#3 .]
+    }
+    section peak [2 bars] {
+        chord: [G#3 . . . F#3 . . . G#3 . . . E3 . F#3 .]
+    }
+    section ending [2 bars] {
+        chord: [G#3 . . . . . . . . . . . . . . .]
+    }
+}
+
+track lead {
     pluck
     section intro [2 bars] {
         note: [. . . . . . . . . . . . . . . .]
     }
-    section groove_a [2 bars] {
+    section groove [2 bars] {
         note: [. . . . . . . . . . . . . . . .]
     }
-    section groove_b [2 bars] {
-        note: [. . . . E4 . . . . . . . D4 . . .] vel [. . . . x . . . . . . . x . . .]
+    section riff_a [2 bars] {
+        note: [. . . . . . . . . . . . . . . .]
     }
-    section build [2 bars] {
-        note: [E4 . . . G4 . . . D4 . . . F4 . . .] vel [x . . . x . . . x . . . x . . .]
+    section accent [2 bars] {
+        note: [. . . . . . . . . . . . . . . .]
     }
-    section peak [2 bars] {
-        note: [E4 . G4 . B4 . G4 . D4 . F4 . A4 . F4 .] vel [X . x . x . x . X . x . x . x .]
-    }
-    section ending [2 bars] {
-        note: [E4 . . . . . . . . . . . . . . .] vel [x . . . . . . . . . . . . . . .]
-    }
-}
-
-track bass {
-    bass
-    section intro [2 bars] {
-        line: [E1 . . . . . . . D1 . . . . . . .]
-    }
-    section groove_a [2 bars] {
-        line: [E1 . . . E1 . . . D1 . . . D1 . . .]
-    }
-    section groove_b [2 bars] {
-        line: [E1 . E1 . . . E1 . D1 . D1 . . . D1 .]
-    }
-    section build [2 bars] {
-        line: [E1 . E1 . E1 . E1 . D1 . D1 . D1 . D1 .]
+    section riff_b [2 bars] {
+        note: [G#4 . F#4 . E4 . F#4 . G#4 . F#4 . E4 . F#4 .] vel [x . x . x . x . x . x . x . x .]
     }
     section peak [2 bars] {
-        line: [E1 . E1 . . E1 . . D1 . D1 . . D1 . .]
+        note: [G#4 . G#4 . F#4 . F#4 . G#4 . G#4 . E4 . F#4 .] vel [X . x . X . x . X . x . X . x .]
     }
     section ending [2 bars] {
-        line: [E1 . . . . . . . . . . . . . . .]
+        note: [G#4 . . . . . . . . . . . . . . .] vel [x . . . . . . . . . . . . . . .]
     }
 }
