@@ -1,0 +1,179 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: resonance-linux-amd64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            artifact: resonance-linux-arm64
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            artifact: resonance-macos-amd64
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            artifact: resonance-macos-arm64
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
+      - name: Install cross-compilation tools (Linux ARM64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
+          echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+
+      - uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@ad397744b0d591a723ab90405b7247fac0e6b8db # v2
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package binary
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/resonance dist/resonance
+          cd dist
+          tar czf ${{ matrix.artifact }}.tar.gz resonance
+          shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.tar.gz*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f -name '*.tar.gz*' -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            --title "Resonance ${{ github.ref_name }}" \
+            --generate-notes \
+            release/*
+
+  homebrew:
+    name: Update Homebrew Formula
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download macOS ARM64 artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: resonance-macos-arm64
+          path: artifacts
+
+      - name: Download macOS AMD64 artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: resonance-macos-amd64
+          path: artifacts
+
+      - name: Download Linux AMD64 artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: resonance-linux-amd64
+          path: artifacts
+
+      - name: Get checksums
+        id: checksums
+        run: |
+          echo "macos_arm64_sha=$(cat artifacts/resonance-macos-arm64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "macos_amd64_sha=$(cat artifacts/resonance-macos-amd64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_amd64_sha=$(cat artifacts/resonance-linux-amd64.tar.gz.sha256 | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew tap
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          cat > formula.rb << FORMULA
+          class Resonance < Formula
+            desc "Terminal-native live coding music instrument"
+            homepage "https://github.com/felixgeelhaar/resonance"
+            version "${VERSION}"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/felixgeelhaar/resonance/releases/download/${{ github.ref_name }}/resonance-macos-arm64.tar.gz"
+                sha256 "${{ steps.checksums.outputs.macos_arm64_sha }}"
+              else
+                url "https://github.com/felixgeelhaar/resonance/releases/download/${{ github.ref_name }}/resonance-macos-amd64.tar.gz"
+                sha256 "${{ steps.checksums.outputs.macos_amd64_sha }}"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/felixgeelhaar/resonance/releases/download/${{ github.ref_name }}/resonance-linux-amd64.tar.gz"
+              sha256 "${{ steps.checksums.outputs.linux_amd64_sha }}"
+            end
+
+            def install
+              bin.install "resonance"
+            end
+
+            test do
+              assert_match "resonance", shell_output("#{bin}/resonance --version")
+            end
+          end
+          FORMULA
+
+          # Push to homebrew tap repo
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/felixgeelhaar/homebrew-resonance.git tap
+          mkdir -p tap/Formula
+          cp formula.rb tap/Formula/resonance.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/resonance.rb
+          git commit -m "Update resonance to ${VERSION}"
+          git push
