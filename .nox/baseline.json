@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0.0",
+  "entries": [
+    {
+      "fingerprint": "17c78d871abf53db5771d173ce332e5347007ee46e07189b7fab5c99dbfbf4ad",
+      "rule_id": "",
+      "file_path": "",
+      "severity": "",
+      "reason": "False positive: git clone x-access-token URL uses masked secret env var HOMEBREW_TAP_TOKEN, not a hardcoded credential (release.yml homebrew tap push)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-07-11T11:19:08.145929Z"
+    }
+  ]
+}

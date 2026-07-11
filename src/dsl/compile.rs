@@ -88,7 +88,7 @@ pub fn compile_program(program: &Program) -> Result<CompiledSong, CompileError> 
     }
 
     // Sort events by time
-    events.sort_by(|a, b| a.time.cmp(&b.time));
+    events.sort_by_key(|a| a.time);
 
     Ok(CompiledSong {
         tempo: program.tempo,

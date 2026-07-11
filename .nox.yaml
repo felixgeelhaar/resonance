@@ -1,0 +1,36 @@
+# nox configuration — the security/dependency gate that replaces dependabot.
+# Schema reference: https://github.com/nox-hq/nox
+#
+# Only GENERATED, VENDORED, or PROSE artifacts are excluded here. All first-party
+# Rust source (src/, tests/, examples/) is scanned. Cargo.lock is deliberately
+# KEPT in scope — it is the Rust dependency source of truth for OSV/RUSTSEC
+# lookups (VULN-001), so excluding it would blind the dependency graph.
+#
+# The remaining first-party critical/high finding (a GitHub token-injection
+# `git clone https://x-access-token:${SECRET}@github.com/...` in release.yml,
+# flagged SEC-085 "URL with embedded password" — the credential is a masked
+# secret env var, not a hardcoded literal) is a documented false positive
+# accepted via .nox/baseline.json, never by blinding the workflow file.
+
+scan:
+  exclude:
+    # Rust build output — compiled artifacts, incremental caches, and vendored
+    # crate copies. Not source; never contains first-party code to scan.
+    # Classification: Acceptable Pattern (build output). Last reviewed: 2026-07-11
+    - target/
+    - "**/target/**"
+    # nox's own baseline/cache and report output — finding fingerprints are
+    # SHA-256 hex that re-trip the secret detector. Never scan the scanner.
+    # Classification: Acceptable Pattern (scanner state). Last reviewed: 2026-07-11
+    - .nox/
+    - findings.json
+    - nox-results/
+    - "**/*.sarif"
+    # Markdown is prose — README, docs/, CONTRIBUTING, CODE_OF_CONDUCT. The
+    # secret/PII entropy rules fire on ordinary documentation (example commands,
+    # paths, env-var names). High-confidence real secret patterns are still
+    # caught in code, not prose.
+    # Classification: False Positive (prose). Last reviewed: 2026-07-11
+    - README.md
+    - "*.md"
+    - "**/*.md"
