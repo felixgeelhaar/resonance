@@ -1,0 +1,14 @@
+extends: ''
+agent: auto
+hooks: {pre_commit: true, pre_push: true}
+commands:
+  fmt: "cargo fmt --check"
+  clippy: "cargo clippy -- -D warnings"
+  test: "cargo test"
+  build: "cargo build --release"
+steps:
+  pre_commit: [fmt]
+  pre_push: [rebase, fmt, clippy, test, build]
+risk: {diff_lines_high: 400, files_touched_high: 15}
+pr: {enabled: false}
+rules: []
