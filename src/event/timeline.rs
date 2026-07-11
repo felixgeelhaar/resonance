@@ -116,7 +116,7 @@ impl Timeline {
     /// Uses a stable sort to preserve insertion order for simultaneous events.
     fn ensure_sorted(&mut self) {
         if self.dirty {
-            self.events[self.cursor..].sort_by(|a, b| a.time.cmp(&b.time));
+            self.events[self.cursor..].sort_by_key(|a| a.time);
             self.dirty = false;
         }
     }
