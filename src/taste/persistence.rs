@@ -19,7 +19,7 @@ pub fn load_profile(path: &Path) -> Result<TasteProfile, io::Error> {
         return Ok(TasteProfile::new());
     }
     let content = std::fs::read_to_string(path)?;
-    serde_yaml::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    serde_norway::from_str(&content).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
 /// Save a taste profile to a YAML file, creating parent directories as needed.
@@ -27,7 +27,7 @@ pub fn save_profile(path: &Path, profile: &TasteProfile) -> Result<(), io::Error
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let yaml = serde_yaml::to_string(profile).map_err(io::Error::other)?;
+    let yaml = serde_norway::to_string(profile).map_err(io::Error::other)?;
     std::fs::write(path, yaml)
 }
 

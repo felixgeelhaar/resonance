@@ -33,7 +33,7 @@ fn config_path() -> Option<PathBuf> {
 pub fn load_config() -> Option<AiConfig> {
     let path = config_path()?;
     let content = std::fs::read_to_string(&path).ok()?;
-    serde_yaml::from_str(&content).ok()
+    serde_norway::from_str(&content).ok()
 }
 
 #[cfg(test)]
@@ -63,7 +63,7 @@ api_url: https://api.openai.com/v1
 api_key: sk-test-123
 model: gpt-4
 "#;
-        let config: AiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: AiConfig = serde_norway::from_str(yaml).unwrap();
         assert!(config.enabled);
         assert_eq!(config.provider, "openai");
         assert_eq!(config.model, "gpt-4");
@@ -72,7 +72,7 @@ model: gpt-4
     #[test]
     fn partial_yaml_config() {
         let yaml = "enabled: true\n";
-        let config: AiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: AiConfig = serde_norway::from_str(yaml).unwrap();
         assert!(config.enabled);
         assert!(config.api_key.is_empty());
     }

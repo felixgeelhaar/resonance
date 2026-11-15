@@ -26,7 +26,8 @@ impl PluginRegistry {
                     let manifest_path = path.join("plugin.yaml");
                     if manifest_path.exists() {
                         if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                            if let Ok(manifest) = serde_yaml::from_str::<PluginManifest>(&content) {
+                            if let Ok(manifest) = serde_norway::from_str::<PluginManifest>(&content)
+                            {
                                 plugins.insert(manifest.name.clone(), (manifest, path));
                             }
                         }
@@ -63,7 +64,7 @@ impl PluginRegistry {
             let manifest_path = dir.join("plugin.yaml");
             if manifest_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&manifest_path) {
-                    if let Ok(manifest) = serde_yaml::from_str::<PluginManifest>(&content) {
+                    if let Ok(manifest) = serde_norway::from_str::<PluginManifest>(&content) {
                         if !self.plugins.contains_key(&manifest.name) {
                             self.plugins
                                 .insert(manifest.name.clone(), (manifest, dir.clone()));

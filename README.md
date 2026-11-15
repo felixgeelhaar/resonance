@@ -1,5 +1,7 @@
 # Resonance
 
+[![nox security grade](.github/nox-badge.svg)](.github/workflows/nox-scan.yml)
+
 A terminal-native live coding music instrument built in Rust.
 
 Write code. Hear music. Perform live — all from your terminal.

@@ -221,8 +221,8 @@ mod tests {
             address_pattern: "/macro/1".to_string(),
             target: OscTarget::Macro(0),
         };
-        let yaml = serde_yaml::to_string(&mapping).unwrap();
-        let parsed: OscMapping = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&mapping).unwrap();
+        let parsed: OscMapping = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(parsed.address_pattern, "/macro/1");
         assert_eq!(parsed.target, OscTarget::Macro(0));
     }

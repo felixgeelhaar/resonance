@@ -120,8 +120,8 @@ mod tests {
             .curve_preferences
             .insert("cutoff".to_string(), CurvePreference::Exp);
 
-        let yaml = serde_yaml::to_string(&profile).unwrap();
-        let restored: TasteProfile = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&profile).unwrap();
+        let restored: TasteProfile = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(profile, restored);
     }
 

@@ -84,7 +84,7 @@ impl PackManager {
                 if path.is_dir() {
                     let manifest_path = path.join("manifest.yaml");
                     if let Ok(content) = fs::read_to_string(&manifest_path) {
-                        if let Ok(manifest) = serde_yaml::from_str::<PackManifest>(&content) {
+                        if let Ok(manifest) = serde_norway::from_str::<PackManifest>(&content) {
                             let dir_name = path
                                 .file_name()
                                 .and_then(|n| n.to_str())
@@ -106,7 +106,7 @@ impl PackManager {
         let manifest_path = source_dir.join("manifest.yaml");
         let content = fs::read_to_string(&manifest_path)
             .map_err(|_| PackError::InvalidManifest("manifest.yaml not found".to_string()))?;
-        let manifest: PackManifest = serde_yaml::from_str(&content)
+        let manifest: PackManifest = serde_norway::from_str(&content)
             .map_err(|e| PackError::InvalidManifest(e.to_string()))?;
 
         let dest_dir = self.base_dir.join(&manifest.name);
@@ -135,7 +135,7 @@ impl PackManager {
     pub fn info(&self, name: &str) -> Option<PackManifest> {
         let manifest_path = self.base_dir.join(name).join("manifest.yaml");
         let content = fs::read_to_string(&manifest_path).ok()?;
-        serde_yaml::from_str(&content).ok()
+        serde_norway::from_str(&content).ok()
     }
 
     /// Get all kit directories from all installed packs.
@@ -349,7 +349,7 @@ plugins:
 presets:
   - groove.dsl
 "#;
-        let manifest: PackManifest = serde_yaml::from_str(yaml).unwrap();
+        let manifest: PackManifest = serde_norway::from_str(yaml).unwrap();
         assert_eq!(manifest.name, "808_kit");
         assert_eq!(manifest.version, "1.0.0");
         assert_eq!(manifest.author.as_deref(), Some("Producer"));

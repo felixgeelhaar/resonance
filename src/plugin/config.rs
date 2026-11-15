@@ -62,7 +62,7 @@ instrument:
     snare: "snare.wav"
     hat: "hat.wav"
 "#;
-        let manifest: PluginManifest = serde_yaml::from_str(yaml).unwrap();
+        let manifest: PluginManifest = serde_norway::from_str(yaml).unwrap();
         assert_eq!(manifest.name, "808 Kit");
         assert_eq!(manifest.version, "1.0.0");
         assert_eq!(manifest.author.as_deref(), Some("Test"));
@@ -88,7 +88,7 @@ instrument:
     release: 1.0
   filter_cutoff: 0.4
 "#;
-        let manifest: PluginManifest = serde_yaml::from_str(yaml).unwrap();
+        let manifest: PluginManifest = serde_norway::from_str(yaml).unwrap();
         assert_eq!(manifest.name, "Warm Pad");
         let inst = manifest.instrument.unwrap();
         assert_eq!(inst.kind, InstrumentKind::Synth);
@@ -105,7 +105,7 @@ instrument:
 name: "Minimal"
 version: "0.1.0"
 "#;
-        let manifest: PluginManifest = serde_yaml::from_str(yaml).unwrap();
+        let manifest: PluginManifest = serde_norway::from_str(yaml).unwrap();
         assert_eq!(manifest.name, "Minimal");
         assert!(manifest.instrument.is_none());
         assert!(manifest.author.is_none());

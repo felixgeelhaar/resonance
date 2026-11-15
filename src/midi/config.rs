@@ -25,7 +25,7 @@ impl MidiConfig {
         let home = dirs::home_dir()?;
         let path = home.join(".resonance").join("midi.yaml");
         let content = std::fs::read_to_string(path).ok()?;
-        serde_yaml::from_str(&content).ok()
+        serde_norway::from_str(&content).ok()
     }
 
     /// Default mappings: CC1-8 → macro 0-7.
@@ -64,8 +64,8 @@ mod tests {
     #[test]
     fn serialize_deserialize() {
         let config = MidiConfig::default();
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: MidiConfig = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&config).unwrap();
+        let parsed: MidiConfig = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(parsed.mappings.len(), 8);
     }
 
@@ -82,7 +82,7 @@ mappings:
     program: 1
     section_idx: 0
 "#;
-        let config: MidiConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: MidiConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(config.device_name.as_deref(), Some("Arturia"));
         assert_eq!(config.channel_filter, Some(0));
         assert_eq!(config.mappings.len(), 2);
