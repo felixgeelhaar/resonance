@@ -279,8 +279,8 @@ mod tests {
             cc: 1,
             macro_idx: 0,
         };
-        let yaml = serde_yaml::to_string(&mapping).unwrap();
-        let parsed: MidiMapping = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&mapping).unwrap();
+        let parsed: MidiMapping = serde_norway::from_str(&yaml).unwrap();
         match parsed {
             MidiMapping::CcToMacro { cc, macro_idx } => {
                 assert_eq!(cc, 1);

@@ -26,14 +26,14 @@ const BUILTIN_TUTORIAL: &str = include_str!("../../assets/tutorials/basics.yaml"
 
 /// Load the built-in tutorial pack.
 pub fn builtin_tutorial() -> TutorialPack {
-    serde_yaml::from_str(BUILTIN_TUTORIAL).expect("built-in tutorial YAML must be valid")
+    serde_norway::from_str(BUILTIN_TUTORIAL).expect("built-in tutorial YAML must be valid")
 }
 
 /// Load a tutorial pack from a YAML file path.
 pub fn load_tutorial_pack(path: &std::path::Path) -> Result<TutorialPack, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    serde_yaml::from_str(&content).map_err(|e| format!("failed to parse tutorial YAML: {e}"))
+    serde_norway::from_str(&content).map_err(|e| format!("failed to parse tutorial YAML: {e}"))
 }
 
 #[cfg(test)]

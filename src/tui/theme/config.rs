@@ -112,7 +112,7 @@ pub fn load_theme_from_yaml() -> Option<Theme> {
 
 /// Parse a YAML string into a Theme, filling missing fields from default.
 fn parse_theme_yaml(yaml: &str) -> Option<Theme> {
-    let config: ThemeConfig = serde_yaml::from_str(yaml).ok()?;
+    let config: ThemeConfig = serde_norway::from_str(yaml).ok()?;
     let d = super::builtin::default();
 
     let color_or = |opt: Option<String>, fallback: Color| -> Color {
