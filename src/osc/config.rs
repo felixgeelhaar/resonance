@@ -26,7 +26,7 @@ impl OscConfig {
         let home = dirs::home_dir()?;
         let path = home.join(".resonance").join("osc.yaml");
         let content = std::fs::read_to_string(path).ok()?;
-        serde_yaml::from_str(&content).ok()
+        serde_norway::from_str(&content).ok()
     }
 
     /// Default mappings: /macro/1-8, /section/1-8, /play, /bpm.
@@ -87,8 +87,8 @@ mod tests {
     #[test]
     fn serialize_deserialize() {
         let config = OscConfig::default();
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: OscConfig = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&config).unwrap();
+        let parsed: OscConfig = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(parsed.listen_port, 9000);
         assert_eq!(parsed.mappings.len(), config.mappings.len());
     }
@@ -101,7 +101,7 @@ mappings:
   - address_pattern: "/filter"
     target: !Macro 0
 "#;
-        let config: OscConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: OscConfig = serde_norway::from_str(yaml).unwrap();
         assert_eq!(config.listen_port, 8000);
         assert_eq!(config.mappings.len(), 1);
     }

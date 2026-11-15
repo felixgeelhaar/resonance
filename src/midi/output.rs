@@ -144,13 +144,13 @@ impl MidiOutputConfig {
     /// Load from a YAML file.
     pub fn load(path: &std::path::Path) -> Result<Self, std::io::Error> {
         let content = std::fs::read_to_string(path)?;
-        serde_yaml::from_str(&content).map_err(|e| std::io::Error::other(e.to_string()))
+        serde_norway::from_str(&content).map_err(|e| std::io::Error::other(e.to_string()))
     }
 
     /// Save to a YAML file.
     pub fn save(&self, path: &std::path::Path) -> Result<(), std::io::Error> {
         let content =
-            serde_yaml::to_string(self).map_err(|e| std::io::Error::other(e.to_string()))?;
+            serde_norway::to_string(self).map_err(|e| std::io::Error::other(e.to_string()))?;
         std::fs::write(path, content)
     }
 }
@@ -182,8 +182,8 @@ mod tests {
                 channel: 1,
             }],
         };
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: MidiOutputConfig = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_norway::to_string(&config).unwrap();
+        let parsed: MidiOutputConfig = serde_norway::from_str(&yaml).unwrap();
         assert_eq!(parsed.routes.len(), 1);
         assert_eq!(parsed.routes[0].device, "USB MIDI");
     }
