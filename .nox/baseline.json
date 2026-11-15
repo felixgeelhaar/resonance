@@ -9,6 +9,96 @@
       "reason": "False positive: git clone x-access-token URL uses masked secret env var HOMEBREW_TAP_TOKEN, not a hardcoded credential (release.yml homebrew tap push)",
       "owner": "felixgeelhaar",
       "created_at": "2026-07-11T11:19:08.145929Z"
+    },
+    {
+      "fingerprint": "4d92bec95f840db517b3a7bb2dcf6a78f8a7afc1d909d63036da552bc8ea5fb1",
+      "rule_id": "TAINT-004",
+      "file_path": "src/content/packs.rs",
+      "severity": "medium",
+      "reason": "False positive: local CLI reads user-chosen pack/plugin/taste files from the local filesystem; no http_query source exists in this terminal application (the path is a function parameter, not network input)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:47.228071Z"
+    },
+    {
+      "fingerprint": "7b3e4c7f95c801d57e81e72f0eaf5b304f158c6189fecc8572a2166e4ff5c655",
+      "rule_id": "TAINT-004",
+      "file_path": "src/content/packs.rs",
+      "severity": "medium",
+      "reason": "False positive: local CLI reads user-chosen pack/plugin/taste files from the local filesystem; no http_query source exists in this terminal application (the path is a function parameter, not network input)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:47.228071Z"
+    },
+    {
+      "fingerprint": "ddacdc57559aa02251610370bcb5966166ac32c6620fd1a04932dd4de7981a17",
+      "rule_id": "TAINT-004",
+      "file_path": "src/plugin/registry.rs",
+      "severity": "medium",
+      "reason": "False positive: local CLI reads user-chosen pack/plugin/taste files from the local filesystem; no http_query source exists in this terminal application (the path is a function parameter, not network input)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:47.228071Z"
+    },
+    {
+      "fingerprint": "ed8416952616fefaf3e8fdfa183593e2986c7c0928f6a248c35018dc039d7af1",
+      "rule_id": "TAINT-004",
+      "file_path": "src/taste/persistence.rs",
+      "severity": "medium",
+      "reason": "False positive: local CLI reads user-chosen pack/plugin/taste files from the local filesystem; no http_query source exists in this terminal application (the path is a function parameter, not network input)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:47.228071Z"
+    },
+    {
+      "fingerprint": "7e36e3d951c4619f37fae8e434f61f9f4271bae4e221e5fd00749ab8b6a92c2d",
+      "rule_id": "TAINT-004",
+      "file_path": "src/taste/persistence.rs",
+      "severity": "medium",
+      "reason": "False positive: local CLI reads user-chosen pack/plugin/taste files from the local filesystem; no http_query source exists in this terminal application (the path is a function parameter, not network input)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:47.228071Z"
+    },
+    {
+      "fingerprint": "efffd45e45bdf218052ebd23a0a2fc2295219290f6341d868fed455c871b6993",
+      "rule_id": "IAC-155",
+      "file_path": ".github/workflows/nox-remediate.yml",
+      "severity": "medium",
+      "reason": "Accepted: nox-remediate is a weekly remediation job; workflow_dispatch is intentional so a maintainer can run it on demand. It only calls the org reusable workflow with the repository-scoped token",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:51.222222Z"
+    },
+    {
+      "fingerprint": "52922952e40b8c5ebd4fef0969dd782d57266e9ecccc4e9bddc9be74f0f6daa2",
+      "rule_id": "IAC-308",
+      "file_path": ".github/workflows/nox-remediate.yml",
+      "severity": "low",
+      "reason": "Accepted: nox-remediate is a weekly remediation job; workflow_dispatch is intentional so a maintainer can run it on demand. It only calls the org reusable workflow with the repository-scoped token",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:51.222222Z"
+    },
+    {
+      "fingerprint": "8378df7a1d4adb5806616a668bc89e456b48fe9b7212ca5799b5b8eddbe0ae9c",
+      "rule_id": "IAC-314",
+      "file_path": ".github/workflows/nox-remediate.yml",
+      "severity": "medium",
+      "reason": "Accepted: contents:write is required (nox-remediate pushes a fix branch; release.yml creates the GitHub release)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:54.397194Z"
+    },
+    {
+      "fingerprint": "e37e2faa5f7d812400d1323a31d22e93b710b881ea06f3b656d724454d47a8f4",
+      "rule_id": "IAC-314",
+      "file_path": ".github/workflows/release.yml",
+      "severity": "medium",
+      "reason": "Accepted: contents:write is required (nox-remediate pushes a fix branch; release.yml creates the GitHub release)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:54.397194Z"
+    },
+    {
+      "fingerprint": "97ad188e0785ddce4eefe6d2d1e10de2c1c850dcab14aa15399d987f5cb53c29",
+      "rule_id": "IAC-153",
+      "file_path": ".github/workflows/release.yml",
+      "severity": "medium",
+      "reason": "Accepted: release tarballs ship with sha256 files; artifact attestation not adopted yet (low-confidence heuristic)",
+      "owner": "felixgeelhaar",
+      "created_at": "2026-11-15T10:26:56.984542Z"
     }
   ]
 }
